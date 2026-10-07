@@ -16,14 +16,12 @@ describe('Crypto Module', () => {
     const token = await createEncryptedToken(payload, secretKey);
     expect(typeof token).toBe('string');
     expect(token.length).toBeGreaterThan(0);
-    // Base64URL 文字セット (a-z, A-Z, 0-9, -, _) のみであること
     expect(token).toMatch(/^[A-Za-z0-9_-]+$/);
 
     const decrypted = await decryptToken(token, secretKey);
     expect(decrypted.originalFrom).toBe(payload.originalFrom);
     expect(decrypted.targetDomain).toBe(payload.targetDomain);
     expect(decrypted.originalTo).toBe(payload.originalTo);
-    // 秒単位丸めのため1秒以内の誤差を許容
     expect(Math.abs(decrypted.timestamp - payload.timestamp)).toBeLessThan(1000);
   });
 
@@ -65,7 +63,6 @@ describe('Crypto Module', () => {
     };
 
     const token = await createEncryptedToken(payload, secretKey);
-    // トークンの一部を改ざん
     const tampered = token.slice(0, 10) + (token[10] === 'a' ? 'b' : 'a') + token.slice(11);
 
     await expect(decryptToken(tampered, secretKey)).rejects.toThrow();
@@ -81,12 +78,10 @@ describe('Crypto Module', () => {
 
     const token = await createEncryptedToken(payload, secretKey);
 
-    // 有効期限30日で検証した場合、期限切れエラーになること
     await expect(decryptToken(token, secretKey, 30)).rejects.toThrow(
       /Token expired/
     );
 
-    // 有効期限50日なら復号できること
     const validWith50Days = await decryptToken(token, secretKey, 50);
     expect(validWith50Days.originalFrom).toBe('client@example.com');
   });

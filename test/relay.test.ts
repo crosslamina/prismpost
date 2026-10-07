@@ -69,17 +69,14 @@ describe('PrismPost Email Relay Integration', () => {
 
       await worker.email(mockMessage, env, mockCtx);
 
-      // 個人Gmailに転送されたか
       expect(mockMessage.forward).toHaveBeenCalledTimes(1);
       expect(forwardedTo).toBe(env.ALLOWED_GMAIL_ADDRESS);
 
-      // Reply-To ヘッダーが書き換えられているか
       expect(forwardedHeaders).toBeDefined();
       const replyTo = forwardedHeaders?.get('Reply-To');
       expect(replyTo).toBeDefined();
       expect(replyTo).toMatch(/^reply\+([A-Za-z0-9_-]+)@customdomain\.com$/);
 
-      // トークンを復号して元の情報が保持されているかを検証
       const token = replyTo!.match(/^reply\+([A-Za-z0-9_-]+)@customdomain\.com$/)![1];
       const payload = await decryptToken(token, env.SECRET_KEY);
 
@@ -123,7 +120,6 @@ describe('PrismPost Email Relay Integration', () => {
       let resendRequestBody: any = null;
       let resendAuthHeader: string | null = null;
 
-      // fetch (Resend API) のモック
       vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: any, init: any) => {
         if (url.toString().includes('api.resend.com/emails')) {
           resendAuthHeader = init.headers.Authorization;
@@ -148,25 +144,20 @@ describe('PrismPost Email Relay Integration', () => {
 
       await worker.email(mockMessage, env, mockCtx);
 
-      // Resend API の呼び出しを検証
       expect(globalThis.fetch).toHaveBeenCalledTimes(1);
       expect(resendAuthHeader).toBe(`Bearer ${env.RESEND_API_KEY}`);
       expect(resendRequestBody).toBeDefined();
 
-      // 送信元が独自ドメイン（info@customdomain.com）になっているか
       expect(resendRequestBody.from).toBe('PrismPost Team <info@customdomain.com>');
-      // 送信先が本来のクライアント宛（client@example.com）になっているか
       expect(resendRequestBody.to).toEqual(['client@example.com']);
       expect(resendRequestBody.subject).toBe('Re: Inquiry regarding services');
       expect(resendRequestBody.text).toContain('Thank you for reaching out');
 
-      // スレッド整合性の維持 (In-Reply-To, References)
       expect(resendRequestBody.headers).toEqual({
         'In-Reply-To': '<msg123@example.com>',
         'References': '<msg123@example.com>',
       });
 
-      // 拒否や転送は呼ばれていないこと
       expect(mockMessage.setReject).not.toHaveBeenCalled();
       expect(mockMessage.forward).not.toHaveBeenCalled();
     });
@@ -233,7 +224,6 @@ describe('PrismPost Email Relay Integration', () => {
         /Decryption failed/
       );
 
-      // 個人Gmailにエラー通知が送られたこと
       expect(resendNotificationSent).toBe(true);
       expect(mockMessage.setReject).toHaveBeenCalled();
     });
@@ -248,7 +238,6 @@ describe('PrismPost Email Relay Integration', () => {
       const token = await createEncryptedToken(originalPayload, env.SECRET_KEY);
       const proxyRecipient = `reply+${token}@sales.domain.com`;
 
-      // MIME マルチパートのメール（添付ファイル付き）
       const boundary = '----=_Part_123_456';
       const rawEmailWithAttachment = [
         'From: my-personal@gmail.com',
@@ -266,7 +255,7 @@ describe('PrismPost Email Relay Integration', () => {
         'Content-Disposition: attachment; filename="estimate.txt"',
         'Content-Transfer-Encoding: base64',
         '',
-        'VGhhbmtzIGZvciB5b3VyIGJ1c2luZXNzIQ==', // "Thanks for your business!" in base64
+        'VGhhbmtzIGZvciB5b3VyIGJ1c2luZXNzIQ==',
         `--${boundary}--`,
       ].join('\r\n');
 
@@ -308,7 +297,6 @@ describe('PrismPost Email Relay Integration', () => {
     });
 
     it('should support multiple custom domains seamlessly and statelessly', async () => {
-      // ドメインA宛の返信
       const tokenA = await createEncryptedToken(
         {
           originalFrom: 'user-a@example.com',
@@ -319,7 +307,6 @@ describe('PrismPost Email Relay Integration', () => {
         env.SECRET_KEY
       );
 
-      // ドメインB宛の返信
       const tokenB = await createEncryptedToken(
         {
           originalFrom: 'user-b@example.com',
@@ -340,7 +327,6 @@ describe('PrismPost Email Relay Integration', () => {
         return new Response('Not found', { status: 404 });
       });
 
-      // メールA送信
       await worker.email(
         {
           from: 'my-personal@gmail.com',
@@ -355,7 +341,6 @@ describe('PrismPost Email Relay Integration', () => {
         mockCtx
       );
 
-      // メールB送信
       await worker.email(
         {
           from: 'my-personal@gmail.com',
