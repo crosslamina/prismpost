@@ -1,0 +1,14 @@
+name = "prismpost"
+main = "src/index.ts"
+compatibility_date = "2024-10-01"
+compatibility_flags = ["nodejs_compat"]
+
+# [vars]
+# ALLOWED_GMAIL_ADDRESS = "your-personal-account@gmail.com"
+# DEFAULT_SENDER_NAME = "Support"
+# TOKEN_EXPIRATION_DAYS = "30"
+
+# Note: Secret variables like SECRET_KEY and RESEND_API_KEY
+# should be registered using `wrangler secret put <KEY>`
+# - SECRET_KEY: 32+ characters random string for AES-256-GCM encryption
+# - RESEND_API_KEY: Resend API Key (re_...)
