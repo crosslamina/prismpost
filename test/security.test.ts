@@ -41,28 +41,37 @@ describe('Security Module', () => {
   });
 
   describe('verifyEmailAuthentication', () => {
-    it('should pass if received-spf contains pass', () => {
+    it('should pass if received-spf contains pass for gmail.com', () => {
       const headers = new Headers();
       headers.set('received-spf', 'pass (cloudflare.com: domain of my-account@gmail.com designates 209.85.220.41 as permitted sender)');
 
-      const result = verifyEmailAuthentication(headers);
+      const result = verifyEmailAuthentication(headers, 'my-account@gmail.com');
       expect(result.passed).toBe(true);
     });
 
     it('should pass if authentication-results contains spf=pass', () => {
       const headers = new Headers();
-      headers.set('authentication-results', 'mx.cloudflare.com; spf=pass (google.com: domain of ...)');
+      headers.set('authentication-results', 'mx.cloudflare.com; spf=pass (google.com: domain of my-account@gmail.com)');
 
-      const result = verifyEmailAuthentication(headers);
+      const result = verifyEmailAuthentication(headers, 'my-account@gmail.com');
       expect(result.passed).toBe(true);
     });
 
-    it('should pass if authentication-results contains dkim=pass', () => {
+    it('should pass if authentication-results contains dkim=pass for @gmail.com', () => {
       const headers = new Headers();
       headers.set('authentication-results', 'mx.cloudflare.com; dkim=pass header.i=@gmail.com');
 
-      const result = verifyEmailAuthentication(headers);
+      const result = verifyEmailAuthentication(headers, 'my-account@gmail.com');
       expect(result.passed).toBe(true);
+    });
+
+    it('should reject if dkim=pass or spf=pass belongs to an untrusted attacker domain', () => {
+      const headers = new Headers();
+      headers.set('received-spf', 'pass (cloudflare.com: domain of evil@attacker.com designates 1.2.3.4)');
+      headers.set('authentication-results', 'mx.cloudflare.com; spf=fail; dkim=pass header.i=@attacker.com');
+
+      const result = verifyEmailAuthentication(headers, 'my-account@gmail.com');
+      expect(result.passed).toBe(false);
     });
 
     it('should fail if received-spf is softfail or fail and no dkim pass', () => {

@@ -24,14 +24,39 @@ export function extractEmailAddress(rawAddress: string): string {
 export function isAllowedGmailSender(fromHeader: string, allowedGmailAddress: string): boolean {
   const extractedFrom = extractEmailAddress(fromHeader).toLowerCase();
   const normalizedAllowed = extractEmailAddress(allowedGmailAddress).toLowerCase();
+  if (!extractedFrom || !normalizedAllowed) return false;
   return extractedFrom === normalizedAllowed;
 }
 
 /**
- * メールヘッダーから SPF / DKIM 認証結果を検証
- * Cloudflare Email Routing で付与される received-spf または authentication-results ヘッダーを検査
+ * 指定されたドメインが許可ドメイン（gmail.com / google.com または許可アドレスのドメイン）と一致・サブドメイン一致するか判定
  */
-export function verifyEmailAuthentication(headers: Headers): {
+function isTrustedSenderDomain(domain: string, expectedSenderDomain?: string): boolean {
+  const clean = domain.trim().toLowerCase().replace(/^@/, '').replace(/[>;),\s]+$/, '');
+  if (!clean) return false;
+
+  const allowedDomains = new Set<string>(['gmail.com', 'google.com', 'googlemail.com']);
+  if (expectedSenderDomain) {
+    allowedDomains.add(expectedSenderDomain.toLowerCase());
+  }
+
+  for (const allowed of allowedDomains) {
+    if (clean === allowed || clean.endsWith(`.${allowed}`)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * メールヘッダーから SPF / DKIM 認証結果を検証
+ * Cloudflare Email Routing で付与される received-spf または authentication-results ヘッダーを検査し、
+ * ドメインが記載されている場合は送信元ドメインとの整合性（Alignment）も検証する
+ */
+export function verifyEmailAuthentication(
+  headers: Headers,
+  expectedSenderAddress?: string
+): {
   passed: boolean;
   reason?: string;
   spfResult?: string;
@@ -48,17 +73,66 @@ export function verifyEmailAuthentication(headers: Headers): {
     };
   }
 
-  // 1. received-spf の検証: 'pass' から始まっているか、または 'pass (' などの成功文字列を含むか
-  // 例: "pass (cloudflare.com: domain of user@gmail.com designates ...)"
-  const spfPass =
+  const expectedDomain = expectedSenderAddress
+    ? extractEmailAddress(expectedSenderAddress).split('@')[1]
+    : undefined;
+
+  // 1. received-spf の検証
+  let spfPass = false;
+  if (
     receivedSpf.startsWith('pass') ||
     receivedSpf.includes('spf=pass') ||
-    /\bpass\b/.test(receivedSpf);
+    /\bpass\b/.test(receivedSpf)
+  ) {
+    // "domain of xxx@domain.com" や "google.com" などの記載がある場合はドメイン整合性を確認
+    const domainOfMatch = receivedSpf.match(/domain of\s+([^\s;)]+)/i);
+    if (domainOfMatch && domainOfMatch[1]) {
+      const spfEntity = domainOfMatch[1];
+      const spfDomain = spfEntity.includes('@') ? spfEntity.split('@')[1] : spfEntity;
+      spfPass = isTrustedSenderDomain(spfDomain, expectedDomain);
+    } else {
+      spfPass = true;
+    }
+  }
 
-  // 2. authentication-results の検証: 'spf=pass' または 'dkim=pass' が含まれるか
-  // 例: "mx.cloudflare.com; spf=pass ... dkim=pass ..."
-  const authSpfPass = authResults.includes('spf=pass');
-  const authDkimPass = authResults.includes('dkim=pass');
+  // 2. authentication-results の検証（セクションごとに分割して spf=pass / dkim=pass のドメインを確認）
+  let authSpfPass = false;
+  let authDkimPass = false;
+
+  if (authResults) {
+    const clauses = authResults.split(';');
+    for (const clause of clauses) {
+      const trimmed = clause.trim();
+      if (trimmed.includes('spf=pass')) {
+        const mailfromMatch =
+          trimmed.match(/smtp\.mailfrom=([^\s;)]+)/i) ||
+          trimmed.match(/domain of\s+([^\s;)]+)/i);
+        if (mailfromMatch && mailfromMatch[1]) {
+          const entity = mailfromMatch[1];
+          const domain = entity.includes('@') ? entity.split('@')[1] : entity;
+          if (isTrustedSenderDomain(domain, expectedDomain)) {
+            authSpfPass = true;
+          }
+        } else {
+          authSpfPass = true;
+        }
+      }
+
+      if (trimmed.includes('dkim=pass')) {
+        const headerIMatch = trimmed.match(/header\.i=([^\s;)]+)/i);
+        const headerDMatch = trimmed.match(/header\.d=([^\s;)]+)/i);
+        const dkimEntity = headerIMatch?.[1] || headerDMatch?.[1];
+        if (dkimEntity) {
+          const domain = dkimEntity.includes('@') ? dkimEntity.split('@')[1] : dkimEntity;
+          if (isTrustedSenderDomain(domain, expectedDomain)) {
+            authDkimPass = true;
+          }
+        } else {
+          authDkimPass = true;
+        }
+      }
+    }
+  }
 
   if (spfPass || authSpfPass || authDkimPass) {
     return {

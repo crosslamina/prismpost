@@ -15,6 +15,13 @@ export async function sendEmailViaResend(
     subject: params.subject,
   };
 
+  if (params.cc) {
+    const ccList = Array.isArray(params.cc) ? params.cc : [params.cc];
+    if (ccList.length > 0) {
+      payload.cc = ccList;
+    }
+  }
+
   if (params.text) {
     payload.text = params.text;
   }
