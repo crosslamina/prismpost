@@ -1,123 +1,133 @@
-# PrismPost (GhostMail)
+# PrismPost
 
-Cloudflare Workers (Email Routing API) 上で動作する、個人Gmailと独自ドメインを安全かつ透過的に中継するステートレス・メールプロキシです。
+**さくらのレンタルサーバ（メール自動転送 ＋ PHP送信中継）** と **Gmail アドオン（Google Apps Script）** だけで、個人 Gmail の **迷惑メールフィルタ** と **Gemini AI** を100%活用しながら複数の独自ドメインで送受信を行うシステムです。
 
-Gmail における外部 POP3/SMTP 紐づけ機能の廃止に伴い、**個人 Gmail の UI や Gemini 返信・検索機能、スマート作成を活用したまま、独自ドメイン経由で透過的に送受信を行う** ことができます。
-
----
-
-## 🌟 特徴
-
-1. **受信の透過性 (Inbound Relay)**:
-   - 独自ドメイン宛に届いたメールを受信し、`Reply-To` ヘッダーを暗号化トークン付きのプロキシアドレス（`reply+{token}@{targetDomain}`）に書き換えて個人 Gmail へ転送。
-   - Gmail の返信ボタンを押すだけで、自動的にプロキシアドレス宛の返信が作成されます。
-2. **返信の自動再送 (Outbound Re-send)**:
-   - 個人 Gmail からプロキシアドレス宛に返信されたメールを受信。
-   - 暗号化トークンを復号して本来の相手先アドレスを特定し、Resend API 経由で独自ドメイン名義（`info@{targetDomain}` 等）で相手へ正規送信。
-3. **厳格なセキュリティ検証**:
-   - `received-spf` および `authentication-results` ヘッダーを検査し、Gmail 正当サーバー以外からの偽装送信を即時遮断・破棄。
-   - Web Crypto API (AES-256-GCM) によるトークンの暗号化・改ざん検知・有効期限（デフォルト30日）管理。
-4. **スレッド整合性の維持 & 添付ファイル対応**:
-   - `In-Reply-To` および `References` ヘッダーを引き継ぎ、メールクライアントのスレッド表示が途切れません。
-   - 添付ファイルを自動で Base64 にエンコードして Resend API 経由で相手へ転送。
-5. **完全ステートレス & 複数ドメイン対応**:
-   - データベース（KV/D1等）不要。トークン自体に必要な情報が暗号化されて内包されているため、単一の Worker で無制限の複数独自ドメインを処理可能。
+Cloudflare や外部の有料・制限付きメール配信サービス（Resend / SendGrid 等）は一切使用しません。
 
 ---
 
-## 📂 プロジェクト構成
+## 📂 ファイル構成
 
-```
+```text
 prismpost/
-├── src/
-│   ├── index.ts        # Worker メインエントリポイント (Email Routing ハンドラ)
-│   ├── crypto.ts       # Web Crypto API による AES-256-GCM トークン生成・復号
-│   ├── security.ts     # SPF / DKIM 認証ヘッダーおよび送信元 Gmail アドレス検証
-│   ├── resend.ts       # Resend API (HTTP REST) 送信クライアント
-│   └── types.ts        # 環境変数および内部データ型定義
-├── test/
-│   ├── crypto.test.ts   # 暗号化・復号・改ざん・有効期限切れのユニットテスト
-│   ├── security.test.ts # メールアドレス正規化・SPF/DKIM 検証のユニットテスト
-│   └── relay.test.ts    # 受信転送・返信再送・添付ファイル・複数ドメインの統合テスト
-├── wrangler.toml       # Cloudflare Workers 設定
-├── package.json        # 依存関係およびスクリプト
-├── tsconfig.json       # TypeScript 設定
-└── .env.example        # 環境変数サンプル
+├── gmail-addon/
+│   ├── appsscript.json   # Google Apps Script マニフェストファイル
+│   ├── Code.gs           # Gmail アドオン本体スクリプト
+│   └── sakura-relay.php  # さくらのレンタルサーバ設置用・送信中継スクリプト（1ファイル完結）
+└── README.md             # 導入・利用手順書（本ファイル）
 ```
 
 ---
 
-## ⚙️ 環境変数・シークレット一覧
+## 🌟 特徴と仕組み
 
-| 変数名 | 必須 | 区分 | 説明 |
-|---|---|---|---|
-| `ALLOWED_GMAIL_ADDRESS` | ○ | Secret / Var | 許可する個人 Gmail アドレス (例: `your-account@gmail.com`) |
-| `SECRET_KEY` | ○ | Secret | AES-256-GCM 暗号化用の 32 バイト以上のシークレットキー |
-| `RESEND_API_KEY` | ○ | Secret | Resend の API キー (`re_...`) |
-| `DEFAULT_SENDER_NAME` | 任意 | Var | 送信者表示名 (デフォルト: `PrismPost`) |
-| `TOKEN_EXPIRATION_DAYS` | 任意 | Var | トークンの有効期限日数 (デフォルト: `30`) |
-
----
-
-## 🚀 デプロイと設定手順
-
-### 1. 依存パッケージのインストール
-```bash
-npm install
-```
-
-### 2. シークレットの設定 (Cloudflare Workers)
-Wrangler CLI を用いて、機密情報を Cloudflare Workers に登録します。
-
-```bash
-# 暗号化シークレットキー (ランダムな文字列)
-npx wrangler secret put SECRET_KEY
-
-# Resend API キー
-npx wrangler secret put RESEND_API_KEY
-
-# 許可する個人Gmailアドレス
-npx wrangler secret put ALLOWED_GMAIL_ADDRESS
-```
-
-### 3. Worker のデプロイ
-```bash
-npm run deploy
-```
-
-### 4. Cloudflare Email Routing のルーティング設定
-Cloudflare ダッシュボード上で独自ドメインの Email Routing を設定します。
-
-1. **ドメイン設定**: Cloudflare ダッシュボードで対象ドメインの **Email Routing (メールルーティング)** を有効化（MX / SPF レコードが自動設定されます）。
-2. **ルーティングルールの作成**:
-   - **カスタムアドレス / Catch-all**:
-     - 送信先（Action）: **Worker へ送信 (Send to a Worker)**
-     - 選択する Worker: `prismpost`
-
-※ 複数ドメインで運用する場合は、各ドメインの Email Routing で同じ `prismpost` Worker を指定するだけで自動的にマルチドメイン対応として動作します。
-
-### 5. Resend のドメイン認証
-[Resend](https://resend.com) のダッシュボードで送信元となる独自ドメイン（`yourdomain.com` 等）を登録し、指示に従って DNS レコード (DKIM / SPF) を追加してドメインを認証 (`Verified`) してください。
+1. **受信（さくらインターネットの自動転送）**:
+   * さくらのレンタルサーバの「転送設定」で個人Gmailへ自動転送します。
+   * さくらインターネットは **SRS / ARC 対応**のため、なりすまし判定されず **Gmail本来の迷惑メールフィルタが100%機能**します。
+2. **返信・新規作成（Gemini AI ＋ さくらサーバ直接送信）**:
+   * Gmail上で Gemini AI を使って返信（または全員に返信・新規作成）の下書きを作ります。
+   * 右サイドバーの PrismPost アドオンが、受信メールのヘッダー（`X-Original-To` / `Delivered-To` / `To` / `Cc`）から**どの独自ドメイン宛に届いたメールかを自動判別**し、対応する差出人を自動選択します。
+   * **「🚀 独自ドメインで送信」** を押すと、`From` ヘッダーおよび `Message-ID` の `@mail.gmail.com` を独自ドメインに書き換え、[`sakura-relay.php`](./gmail-addon/sakura-relay.php) 経由で**さくらのメールサーバー（`sendmail`）から直接送信**します。
+   * 送信と同時に Gmail の該当スレッドに「送信済み（`SENT`）」として自動記録され、元の下書きは削除されます。
+3. **セキュリティと添付ファイル対応**:
+   * **HMAC-SHA256 署名 ＋ 5分以内のタイムスタンプ検証**: 通信経路に秘密トークン平文を流さず、リプレイ攻撃や改ざんを防止します。
+   * **OSコマンドインジェクション完全防止**: シェル（`/bin/sh`）を介さない `proc_open` 配列実行と厳格なアドレス検証を採用しています。
+   * **添付ファイル完全対応**: Gmail が生成した MIME データをそのまま転送し、Gmail スレッドへの保存も大容量対応（Upload API 最大35MB）しています。
 
 ---
 
-## 🧪 テストの実行
+## 🚀 導入手順（約5分）
 
-Vitest を用いた包括的な単体・統合テストスイートが同梱されています。
+### ステップ1：さくらのレンタルサーバの設定
+1. **メール転送設定（受信用）**:
+   * さくらのサーバコントロールパネルで、各独自ドメインのメールアドレスの「転送設定」を開き、個人Gmailアドレスへ転送する設定にします（※Gmail側の旧「外部POP3受信」はオフにします）。
+2. **中継用 PHP のアップロード（送信用）**:
+   * [`gmail-addon/sakura-relay.php`](./gmail-addon/sakura-relay.php) を開き、16行目の `$SECRET_TOKEN` を**16文字以上のランダムな長い文字列**に変更します。
+   * 23行目の `$ALLOWED_FROM_DOMAINS` に、ご自身の独自ドメイン一覧（例: `['domain-a.com', 'domain-b.jp']`）を記載します。
+   * さくらのレンタルサーバの HTTPS が使える任意のドメイン配下にアップロードします（1箇所に置くだけで、同じさくらサーバ内の**全ドメイン**の送信に使えます）。
+     * 例: `https://yourdomain.com/prismpost-send.php`
+3. **大容量添付ファイル用の設定（任意）**:
+   * 5MB以上の大きな添付ファイルも送る場合は、さくらのサーバコントロールパネルの「PHP ini ファイル設定」に以下を追加しておきます：
+     ```ini
+     post_max_size = 40M
+     memory_limit = 128M
+     ```
 
-```bash
-# 全テストの実行
-npm test
+### ステップ2：Google Apps Script にアドオンを設置
+1. [Google Apps Script (script.google.com)](https://script.google.com/) を開き、**「新しいプロジェクト」** を作成します。
+2. 左メニューの **「プロジェクトの設定（歯車アイコン）」** を開き、**「「appsscript.json」マニフェスト ファイルをエディタで表示する」** にチェックを入れます。
+3. 左メニューの **「エディタ（`<>`アイコン）」** に戻り：
+   * `appsscript.json` に [`gmail-addon/appsscript.json`](./gmail-addon/appsscript.json) の内容を貼り付けます。
+   * `コード.gs`（または `Code.gs`）に [`gmail-addon/Code.gs`](./gmail-addon/Code.gs) の内容を貼り付けて保存（`Ctrl + S`）します。
+4. 右上の **「デプロイ」＞「デプロイをテスト」** をクリックし、「アプリケーション(Gmail)」の **「インストール」** を押して完了です。
 
-# 型チェック
-npm run typecheck
-```
+### ステップ3：Gmail 画面で初期設定
+1. Gmail を開き（またはリロードし）、右端のサイドパネルにある **紙飛行機アイコン（PrismPost）** をクリックします。
+2. 設定画面に以下を入力して **「💾 設定を保存」** を押します：
+   * **さくらサーバに設置した PHP の URL**: `https://yourdomain.com/prismpost-send.php`
+   * **秘密トークン**: `sakura-relay.php` に設定した `$SECRET_TOKEN`
+   * **差出人アドレス一覧（1行に1件・複数ドメイン可）**:
+     ```text
+     info@domain-a.com | 株式会社A サポート
+     taro@domain-b.jp | 山田 太郎
+     contact@domain-c.net | Cプロジェクト事務局
+     ```
 
 ---
 
-## 🔒 セキュリティモデル
+## 💡 普段の使い方
+1. 届いたメールを開き、Gmail の **「返信」** または **「全員に返信」** を押します。
+2. 普段通り（または **Gemini AI** を使って）返信文を書きます。
+3. 右パネルの PrismPost アドオンで、**届いた独自ドメインの差出人が自動選択されていること**を確認します（必要ならプルダウンで切り替え可能）。
+4. **「🔄 下書きを再読み込み」** → **「🚀 独自ドメインで送信」** を押すだけで送信完了です！
 
-- **アドレス偽装対策**: `message.from` が `ALLOWED_GMAIL_ADDRESS` の場合のみ返信フローを実行し、かつ `received-spf` や `authentication-results` で SPF/DKIM が Pass していることを厳格に検証します。
-- **リプレイ / 改ざん攻撃対策**: AES-256-GCM の認証付き暗号 (AEAD) を採用しており、トークンが1ビットでも改ざんされていた場合は復号時に即時拒絶されます。
-- **有効期限**: トークン内に生成タイムスタンプが埋め込まれており、設定日数（デフォルト30日）を経過したトークンは無効化されます。
-- **エラー通知**: 万が一無効なトークンや期限切れのトークンで返信された場合、個人 Gmail 宛てにエラー通知メールが送られ、メッセージは Cloudflare 上で安全に破棄されます。
+---
+
+## 📜 設計の経緯（ここに至るまでの紆余曲折）
+
+本プロジェクトは「個人 Gmail の外部 POP3 受信・外部 SMTP 送信（名前を付けて送信）が廃止された後も、**Gmail の強力な迷惑メールフィルタ** と **Gemini AI** を使いながら複数の独自ドメインで送受信したい」という目的からスタートし、以下の4段階の検証を経て現在の最小構成に辿り着きました。
+
+### 第1段階：Cloudflare Worker によるプロキシアドレス暗号化方式（却下）
+* **仕組み**: Cloudflare Email Routing Worker で受信時に `Reply-To` を暗号化プロキシアドレス（`reply+{token}@domain`）へ書き換え、Gmail標準の「送信」ボタンで返信されたメールを Worker で復号して Resend API で再送する方式。
+* **判明した問題点**:
+  * メールアドレスのローカル部（`@`より前）には **RFC 5321 の 64文字制限** があり、AES-GCM 暗号化トークンを入れると制限を超過して送信エラーになる。
+  * トークンをなくして可読アドレス変換（`sender+user=domain@my-domain`）にしても、**「全員に返信（CC）」** を行うと複数のプロキシアドレス宛に同時にメールが飛び、相手へ同じ返信が何通も重複送信されてしまう。
+  * バウンスメール対策、引用文中のプロキシアドレス漏洩対策など、メール仕様（RFC）とのいたちごっこが発生した。
+
+### 第2段階：DB（KV / D1）方式・カスタムヘッダー方式（却下）
+* **仕組み**: 64文字制限やCC問題を回避するため、Cloudflare D1 / KV にスレッド情報を保存する案や、`X-PrismPost-*` といった独自ヘッダーをDB代わりに使う案を検討。
+* **判明した問題点**:
+  * メールクライアント（Gmail）の仕様上、**受信メールに付与した独自ヘッダー（`X-*`）は、返信メールには引き継がれない**（引き継がれるのは `In-Reply-To` と `References` のみ）。
+  * また、Cloudflare Email Routing の `message.forward()` は標準ヘッダーの書き換えを制限しており、そもそも複数の独自ドメインのネームサーバー（DNS）をすべて Cloudflare に移管しなければならないという運用上の大きなハードルがあった。
+
+### 第3段階：Gmail アドオン（Google Apps Script）への発想転換
+* **転換点**: 「Gmailの青い送信ボタンを押すために返信先アドレスを偽装する」のではなく、**「Gmailで下書き（Gemini AI可）を作り、右サイドバーのアドオンのボタンから外部送信する」** という方式へ転換。
+* **解決したこと**:
+  * 下書きの `To` / `Cc` / `Bcc` / `添付ファイル` をそのまま取得して直接送れるため、**64文字制限・CC重複問題・DB管理・プロキシアドレス変換がすべて不要**になった。
+  * 送信後に Gmail API（`Users.Messages.insert`）でスレッドに `SENT`（送信済み）として控えを戻すことで、次回以降も Gemini AI が自分の返信内容を含めてスレッドの文脈を把握できるようになった。
+
+### 第4段階：さくらのレンタルサーバ完結型へ（最終形）
+* **決定打**: ドメインとメールサーバーを **「さくらのレンタルサーバ」** で運用していることが判明。
+  * **受信**: さくらインターネットの自動転送は **SRS / ARC に対応**しているため、Cloudflare を介さず直接個人 Gmail へ自動転送しても SPF/DMARC エラーにならず、Gmail の迷惑メールフィルタが100%機能する。
+  * **送信**: Google Apps Script は仕様上 SMTP（ポート587/465）に直接接続できないが、さくらのレンタルサーバ上に 1 ファイルの中継スクリプト（[`sakura-relay.php`](./gmail-addon/sakura-relay.php)）を置くことで、HTTPS 経由でさくら自身のメールサーバー（`sendmail`）から直接送信できる。
+* **結果**: Cloudflare への DNS 移管も、Resend / Brevo 等の外部配信サービス（無料枠のドメイン数制限や通数制限）も一切不要となり、**追加費用ゼロ・外部依存ゼロ・実質2ファイルのみ**の現在の構成が完成した。
+
+---
+
+## 🛡️ 将来もし「Gmail アドオン」が廃止・仕様変更されたら？（BCP / 脱出ルート）
+
+万が一、将来 Google が Google Workspace Add-ons（右サイドバーのカードUI）の仕様を変更したり、個人 Gmail アカウントでのテストデプロイを制限したりした場合でも、**「受信（さくら転送）」と「送信エンジン（[`sakura-relay.php`](./gmail-addon/sakura-relay.php)）」の主権がすべて自分自身のさくらのレンタルサーバ側にあるため、詰むことはありません。**
+
+いざという時は、`sakura-relay.php` をそのまま活かして以下のいずれかの方法へ10分程度で移行できます。
+
+### 脱出ルート①：Apps Script の「スター（⭐）/ ラベル自動送信」方式（アドオンUI不要）
+* 右サイドバーのアドオン画面（`CardService`）を一切使わず、Google Apps Script の標準タイマー（1分おきの時間主導型トリガー）だけで動かす方式です。
+* Gmail で返信下書きを作成したあと、**そのメールに「⭐（スター）」または「送信待ちラベル」を付けるだけ**で、バックグラウンドのスクリプトが下書きを検知して `sakura-relay.php` へ送信し、下書きを削除して `SENT` に記録します。
+* アドオンUIに依存しないため、UI仕様変更の影響を一切受けません。
+
+### 脱出ルート②：PC ブラウザの Chrome 拡張機能 / ブックマークレット方式
+* 万が一 Google Apps Script 自体に制限がかかった場合でも、手元の Chrome ブラウザの簡易拡張機能から Gmail 画面の下書きを取得し、直接 `sakura-relay.php` を叩いて送信できます。
+
+### 脱出ルート③：さくらの Web メール / 標準メールソフトへの即時フォールバック
+* ドメインの DNS もメールボックスもすべて「さくらのレンタルサーバ」にそのまま残っているため、Google 側で障害や急な仕様変更が起きた当日であっても、設定変更ゼロでさくらの Web メールや Thunderbird / スマホ標準メールアプリから即座に送受信を継続できます。
+
