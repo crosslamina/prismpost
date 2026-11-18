@@ -23,7 +23,7 @@
   "addOns": {
     "common": {
       "name": "PrismPost",
-      "logoUrl": "https://fonts.gstatic.com/s/e/notoemoji/latest/1f48e/512.png",
+      "logoUrl": "https://raw.githubusercontent.com/crosslamina/prismpost/main/gmail-addon/prismpost-icon.png",
       "homepageTrigger": {
         "runFunction": "onHomepage",
         "enabled": true

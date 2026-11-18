@@ -12,7 +12,7 @@
  * 4. 送信したメールを Gmail のスレッドに「送信済み (SENT)」として自動追加（次回以降も Gemini AI が文脈を認識可能）
  */
 
-var PRISM_ICON_URL = 'https://fonts.gstatic.com/s/e/notoemoji/latest/1f48e/512.png';
+var PRISM_ICON_URL = 'https://raw.githubusercontent.com/crosslamina/prismpost/main/gmail-addon/prismpost-icon.png';
 
 /**
  * 共通のプリズムアイコン付きカードヘッダーを生成
@@ -21,7 +21,7 @@ function buildPrismHeader_(title, subtitle) {
   var header = CardService.newCardHeader()
     .setTitle(title)
     .setImageUrl(PRISM_ICON_URL)
-    .setImageStyle(CardService.ImageStyle.CIRCLE);
+    .setImageStyle(CardService.ImageStyle.SQUARE);
   if (subtitle) {
     header.setSubtitle(subtitle);
   }
