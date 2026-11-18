@@ -119,17 +119,6 @@ function onHomepage(e) {
 }
 
 /**
- * 3. 作成画面（Compose Trigger）から呼び出されたときのトリガー
- */
-function onGmailCompose(e) {
-  var settings = getSettings_();
-  if (!hasValidSettings_(settings)) {
-    return buildSettingsCard_('最初に「さくらのPHP URL」と「差出人アドレス一覧」を設定してください。');
-  }
-  return buildComposeDraftListCard_(settings);
-}
-
-/**
  * 差出人選択ウィジェット群をセクションに追加する共通関数
  */
 function addSenderSelectionWidgets_(section, settings, selectedEmail, selectedName) {
@@ -344,13 +333,14 @@ function buildComposeDraftListCard_(settings) {
   card.addSection(senderSection);
 
   var draftSection = CardService.newCardSection().setHeader('2. 送信する下書きを選択（最新5件）');
-  var drafts = GmailApp.getDrafts().slice(0, 5);
+  var drafts = getSendableDrafts_(5);
 
   if (drafts.length === 0) {
     draftSection.addWidget(
       CardService.newTextParagraph().setText(
-        '現在 Gmail に保存されている下書きはありません。<br>' +
-        'Gmail の「作成」ボタンからメール（Gemini AI可）を作成してから「🔄 更新」を押してください。'
+        '現在、送信可能な下書き（宛先が入力されている下書き）はありません。<br>' +
+        'Gmail の「作成」ボタンから宛先 (To) と本文（Gemini AI可）を入力してから「🔄 下書き一覧を更新」を押してください。<br>' +
+        '<i>※Gmailのテンプレート（定型文）や宛先未設定の下書きは自動的に除外されます。</i>'
       )
     );
   } else {
@@ -798,13 +788,53 @@ function detectReceivingProfile_(message, settings) {
 }
 
 /**
+ * 送信対象として有効な下書きメッセージか判定する
+ * Gmail内部ではテンプレート（定型文）も宛先空の下書きとして保存されるため除外する
+ */
+function isSendableDraftMessage_(msg) {
+  if (!msg) return false;
+  try {
+    var cannedHeader = msg.getHeader('X-Gm-Canned-Response');
+    if (cannedHeader && cannedHeader.trim() !== '') {
+      return false;
+    }
+  } catch (ignoreErr) {}
+
+  var to = (msg.getTo() || '').trim();
+  var cc = (msg.getCc() || '').trim();
+  var bcc = (msg.getBcc() || '').trim();
+  return Boolean(to || cc || bcc);
+}
+
+/**
+ * テンプレート等を除外し、送信可能な最新の下書き一覧を指定件数まで取得する
+ */
+function getSendableDrafts_(limit) {
+  var allDrafts = GmailApp.getDrafts();
+  var result = [];
+  for (var i = 0; i < allDrafts.length; i++) {
+    try {
+      var d = allDrafts[i];
+      if (isSendableDraftMessage_(d.getMessage())) {
+        result.push(d);
+        if (result.length >= limit) {
+          break;
+        }
+      }
+    } catch (ignoreErr) {}
+  }
+  return result;
+}
+
+/**
  * 指定されたスレッドID内にある最新の下書き（GmailDraft）を探す
  */
 function findDraftInThread_(threadId) {
   var drafts = GmailApp.getDrafts();
   for (var i = 0; i < drafts.length; i++) {
     try {
-      if (drafts[i].getMessage().getThread().getId() === threadId) {
+      var msg = drafts[i].getMessage();
+      if (msg.getThread().getId() === threadId && isSendableDraftMessage_(msg)) {
         return drafts[i];
       }
     } catch (e) {}

@@ -14,7 +14,6 @@
   "oauthScopes": [
     "openid",
     "https://www.googleapis.com/auth/userinfo.email",
-    "https://www.googleapis.com/auth/gmail.addons.current.message.metadata",
     "https://www.googleapis.com/auth/gmail.addons.current.message.readonly",
     "https://www.googleapis.com/auth/gmail.addons.execute",
     "https://www.googleapis.com/auth/gmail.modify",
@@ -25,7 +24,6 @@
     "common": {
       "name": "PrismPost (独自ドメイン送信)",
       "logoUrl": "https://www.gstatic.com/images/icons/material/system/1x/send_black_24dp.png",
-      "useLocaleFromApp": true,
       "homepageTrigger": {
         "runFunction": "onHomepage",
         "enabled": true
@@ -43,16 +41,7 @@
           "unconditional": {},
           "onTriggerFunction": "onGmailMessageOpen"
         }
-      ],
-      "composeTrigger": {
-        "selectActions": [
-          {
-            "text": "PrismPost（独自ドメイン）で送信",
-            "runFunction": "onGmailCompose"
-          }
-        ],
-        "draftAccess": "METADATA"
-      }
+      ]
     }
   }
 }
