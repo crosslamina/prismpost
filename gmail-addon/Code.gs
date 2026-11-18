@@ -30,9 +30,20 @@ function buildPrismHeader_(title, subtitle) {
  */
 function getSettings_() {
   var props = PropertiesService.getUserProperties();
+  var signatures = {};
+  var rawSigs = props.getProperty('SIGNATURES_JSON') || '';
+  if (rawSigs) {
+    try {
+      var parsed = JSON.parse(rawSigs);
+      if (parsed && typeof parsed === 'object') {
+        signatures = parsed;
+      }
+    } catch (ignoreErr) {}
+  }
   return {
     sakuraEndpointUrl: props.getProperty('SAKURA_ENDPOINT_URL') || '',
-    senderProfilesRaw: props.getProperty('SENDER_PROFILES') || ''
+    senderProfilesRaw: props.getProperty('SENDER_PROFILES') || '',
+    signatures: signatures
   };
 }
 
@@ -135,8 +146,9 @@ function onHomepage(e) {
 /**
  * 差出人選択ウィジェット群をセクションに追加する共通関数
  */
-function addSenderSelectionWidgets_(section, settings, selectedEmail, selectedName) {
+function addSenderSelectionWidgets_(section, settings, selectedEmail, selectedName, appendSignature) {
   var profiles = parseSenderProfiles_(settings);
+  var sigChecked = (typeof appendSignature === 'boolean') ? appendSignature : true;
 
   if (profiles.length > 0) {
     var dropdown = CardService.newSelectionInput()
@@ -161,11 +173,31 @@ function addSenderSelectionWidgets_(section, settings, selectedEmail, selectedNa
     }
 
     section.addWidget(dropdown);
+
+    var sigToggle = CardService.newSelectionInput()
+      .setType(CardService.SelectionInputType.CHECK_BOX)
+      .setFieldName('append_signature')
+      .addItem('✍️ 選択した差出人の署名を自動挿入する', 'true', sigChecked);
+    section.addWidget(sigToggle);
   } else {
     section.addWidget(
       CardService.newTextParagraph().setText('⚠️ 差出人アドレスが未登録です。右上のメニュー「⚙️ 設定」から登録してください。')
     );
   }
+}
+
+/**
+ * 署名自動挿入チェックボックスが ON か判定する
+ */
+function shouldAppendSignature_(formInput) {
+  if (!formInput || formInput.append_signature === undefined || formInput.append_signature === null) {
+    return false;
+  }
+  var val = formInput.append_signature;
+  if (Array.isArray(val)) {
+    return val.indexOf('true') !== -1;
+  }
+  return String(val) === 'true';
 }
 
 /**
@@ -220,7 +252,7 @@ function buildThreadReplyCard_(params) {
   }
 
   var senderSection = CardService.newCardSection().setHeader('1. 差出人（複数ドメイン対応）');
-  addSenderSelectionWidgets_(senderSection, params.settings, params.detectedEmail, params.detectedName);
+  addSenderSelectionWidgets_(senderSection, params.settings, params.detectedEmail, params.detectedName, params.appendSignature);
   card.addSection(senderSection);
 
   var draftSection = CardService.newCardSection().setHeader('2. 返信下書き（Gemini作成対応）');
@@ -429,6 +461,9 @@ function onReloadThreadCard(e) {
   var detected = detectReceivingProfile_(message, settings);
   var selected = resolveSelectedSender_(e.formInput, settings);
   var draft = findDraftInThread_(thread.getId());
+  var appendSig = (e.formInput && e.formInput.selected_profile !== undefined)
+    ? shouldAppendSignature_(e.formInput)
+    : true;
 
   var updatedCard = buildThreadReplyCard_({
     messageId: messageId,
@@ -436,6 +471,7 @@ function onReloadThreadCard(e) {
     detectedEmail: selected.email || detected.email,
     detectedName: selected.name || detected.name,
     isSentViaPrismPost: isMessageSentViaPrismPost_(message),
+    appendSignature: appendSig,
     settings: settings,
     draft: draft
   });
@@ -513,7 +549,11 @@ function onSendDraft(e) {
   }
 
   var displayFrom = fromName ? (fromName + ' <' + fromEmail + '>') : fromEmail;
-  var mimePrepared = buildRewrittenMime_(draftMsg.getRawContent(), fromEmail, fromName, customHeaders);
+  var signatureText = '';
+  if (shouldAppendSignature_(e.formInput) && settings.signatures) {
+    signatureText = settings.signatures[fromEmail.toLowerCase()] || '';
+  }
+  var mimePrepared = buildRewrittenMime_(draftMsg.getRawContent(), fromEmail, fromName, customHeaders, signatureText);
   var allEnvelopeRecipients = extractAllPureEmails_(toList.concat(ccList).concat(bccList));
 
   var sendResult = sendViaSakuraPhp_({
@@ -669,7 +709,7 @@ function bytesToHex_(bytes) {
  * Gmail下書きの Raw MIME から個人Gmailの痕跡（From / Message-ID）を独自ドメインに書き換え、
  * 送信用MIME（Bccヘッダー除去済み）とGmailスレッド保存用MIMEを生成する
  */
-function buildRewrittenMime_(rawMime, fromEmail, fromName, customHeaders) {
+function buildRewrittenMime_(rawMime, fromEmail, fromName, customHeaders, signatureText) {
   var encodedFrom = formatMimeAddress_(fromEmail, fromName);
   var fromDomain = (fromEmail.split('@')[1] || 'local').trim();
 
@@ -695,6 +735,13 @@ function buildRewrittenMime_(rawMime, fromEmail, fromName, customHeaders) {
     headerPart = 'References: ' + customHeaders['References'] + '\r\n' + headerPart;
   }
 
+  // 4. 差出人ごとの署名を本文 (text/plain および text/html) に自動挿入
+  if (signatureText && signatureText.trim() !== '') {
+    var withSig = injectSignatureIntoRawMime_(headerPart, bodyPart, signatureText);
+    headerPart = withSig.headerPart;
+    bodyPart = withSig.bodyPart;
+  }
+
   // 送信用は Bcc ヘッダー行を取り除く（エンベロープ宛先のみで配送するため）
   var outboundHeaderPart = headerPart.replace(/^Bcc:.*(?:\r?\n[ \t].*)*\r?\n?/im, '');
 
@@ -705,6 +752,290 @@ function buildRewrittenMime_(rawMime, fromEmail, fromName, customHeaders) {
     outboundMime: outboundHeaderPart + bodyPart,
     sentCopyMime: sentCopyHeaderPart + bodyPart
   };
+}
+
+/**
+ * Raw MIME のヘッダー・ボディ対に対して署名を挿入する
+ */
+function injectSignatureIntoRawMime_(headerPart, bodyPart, signatureText) {
+  var updated = injectSignatureIntoMimeEntity_(headerPart + bodyPart, signatureText);
+  var sep = updated.match(/\r?\n\r?\n/);
+  if (!sep) {
+    return { headerPart: headerPart, bodyPart: bodyPart };
+  }
+  return {
+    headerPart: updated.slice(0, sep.index),
+    bodyPart: updated.slice(sep.index)
+  };
+}
+
+/**
+ * 単一または multipart/* MIME エンティティ内の text/plain・text/html パートに署名を挿入
+ */
+function injectSignatureIntoMimeEntity_(rawEntity, signatureText) {
+  var sep = rawEntity.match(/\r?\n\r?\n/);
+  if (!sep) return rawEntity;
+
+  var entHeader = rawEntity.slice(0, sep.index);
+  var entSep = sep[0];
+  var entBody = rawEntity.slice(sep.index + entSep.length);
+
+  var disposition = getUnfoldedHeader_(entHeader, 'Content-Disposition');
+  if (/\battachment\b/i.test(disposition)) {
+    return rawEntity;
+  }
+
+  var contentType = getUnfoldedHeader_(entHeader, 'Content-Type');
+
+  // multipart/* の場合は各パートを再帰処理（添付ファイル等には触れない）
+  if (/^\s*multipart\//i.test(contentType)) {
+    var boundaryMatch = contentType.match(/boundary\s*=\s*(?:"([^"]+)"|([^;\s]+))/i);
+    if (!boundaryMatch) return rawEntity;
+    var boundary = boundaryMatch[1] || boundaryMatch[2];
+    var updatedMultipart = injectSignatureIntoMultipartBody_(entBody, boundary, signatureText);
+    return entHeader + entSep + updatedMultipart;
+  }
+
+  var isPlain = contentType === '' || /^\s*text\/plain\b/i.test(contentType);
+  var isHtml = /^\s*text\/html\b/i.test(contentType);
+  if (!isPlain && !isHtml) {
+    return rawEntity;
+  }
+
+  var charsetMatch = contentType.match(/charset\s*=\s*(?:"([^"]+)"|([^;\s]+))/i);
+  var charset = (charsetMatch && (charsetMatch[1] || charsetMatch[2])) || 'UTF-8';
+  var cte = getUnfoldedHeader_(entHeader, 'Content-Transfer-Encoding').trim().toLowerCase();
+
+  var decodedText;
+  try {
+    decodedText = decodeMimeBodyText_(entBody, cte, charset);
+  } catch (err) {
+    console.warn('Failed to decode MIME body for signature insertion:', err);
+    return rawEntity;
+  }
+
+  var updatedText = isHtml
+    ? insertSignatureHtml_(decodedText, signatureText)
+    : insertSignaturePlain_(decodedText, signatureText);
+
+  if (updatedText === decodedText) {
+    return rawEntity;
+  }
+
+  var b64Wrapped = encodeUtf8Base64Wrapped_(updatedText);
+  var updatedHeader = ensureUtf8Base64Headers_(entHeader, isHtml ? 'text/html' : 'text/plain');
+  return updatedHeader + entSep + b64Wrapped;
+}
+
+/**
+ * multipart ボディ内の各境界パートを処理して再構築する
+ */
+function injectSignatureIntoMultipartBody_(body, boundary, signatureText) {
+  var re = new RegExp('(^|\\r?\\n)(--' + escapeRegExp_(boundary) + ')(--|\\r?\\n)', 'g');
+  var out = [];
+  var inPart = false;
+  var partStart = 0;
+  var match;
+
+  while ((match = re.exec(body)) !== null) {
+    if (!inPart) {
+      out.push(body.slice(0, match.index));
+      if (match[3] === '--') {
+        out.push(body.slice(match.index));
+        return out.join('');
+      }
+      out.push(match[0]);
+      inPart = true;
+      partStart = re.lastIndex;
+      continue;
+    }
+
+    var partContent = body.slice(partStart, match.index);
+    out.push(injectSignatureIntoMimeEntity_(partContent, signatureText));
+
+    if (match[3] === '--') {
+      out.push(body.slice(match.index));
+      return out.join('');
+    }
+    out.push(match[0]);
+    partStart = re.lastIndex;
+  }
+
+  if (inPart && partStart <= body.length) {
+    out.push(body.slice(partStart));
+  }
+  return out.length > 0 ? out.join('') : body;
+}
+
+/**
+ * 折りたたみヘッダーを展開して値を取得する
+ */
+function getUnfoldedHeader_(headerPart, headerName) {
+  var re = new RegExp('^' + escapeRegExp_(headerName) + ':\\s*([\\s\\S]*?)(?=\\r?\\n[^ \\t]|$)', 'im');
+  var match = headerPart.match(re);
+  if (!match) return '';
+  return match[1].replace(/\r?\n[ \t]+/g, ' ').trim();
+}
+
+/**
+ * MIME ボディを Content-Transfer-Encoding に従って文字列へデコードする
+ */
+function decodeMimeBodyText_(bodyStr, cte, charset) {
+  var cs = charset || 'UTF-8';
+  if (cte === 'base64') {
+    var cleaned = bodyStr.replace(/\s+/g, '');
+    if (!cleaned) return '';
+    return Utilities.newBlob(Utilities.base64Decode(cleaned)).getDataAsString(cs);
+  }
+  if (cte === 'quoted-printable') {
+    return decodeQuotedPrintable_(bodyStr, cs);
+  }
+  return bodyStr;
+}
+
+/**
+ * Quoted-Printable 文字列をバイト配列経由で正しく UTF-8 等へデコードする
+ */
+function decodeQuotedPrintable_(str, charset) {
+  var cleaned = str.replace(/=\r?\n/g, '');
+  var bytes = [];
+  for (var i = 0; i < cleaned.length; i++) {
+    var ch = cleaned.charAt(i);
+    if (ch === '=' && /^[0-9A-Fa-f]{2}$/.test(cleaned.substr(i + 1, 2))) {
+      var val = parseInt(cleaned.substr(i + 1, 2), 16);
+      bytes.push(val > 127 ? val - 256 : val);
+      i += 2;
+    } else {
+      var code = cleaned.charCodeAt(i);
+      if (code < 128) {
+        bytes.push(code);
+      } else {
+        var extraBytes = Utilities.newBlob(ch, 'text/plain').getBytes();
+        for (var j = 0; j < extraBytes.length; j++) {
+          bytes.push(extraBytes[j]);
+        }
+      }
+    }
+  }
+  return Utilities.newBlob(bytes).getDataAsString(charset || 'UTF-8');
+}
+
+/**
+ * UTF-8 Base64（76文字改行）にエンコードする
+ */
+function encodeUtf8Base64Wrapped_(text) {
+  var rawBytes = Utilities.newBlob(text, 'text/plain').getBytes();
+  var b64 = Utilities.base64Encode(rawBytes);
+  var chunks = b64.match(/.{1,76}/g);
+  return chunks ? chunks.join('\r\n') : '';
+}
+
+/**
+ * Content-Type を charset="UTF-8"、Content-Transfer-Encoding を base64 に更新する
+ */
+function ensureUtf8Base64Headers_(headerPart, defaultMimeType) {
+  var updated = headerPart;
+
+  if (/^Content-Type:/im.test(updated)) {
+    updated = updated.replace(/^(Content-Type:.*(?:\r?\n[ \t].*)*)/im, function (full) {
+      if (/charset\s*=/i.test(full)) {
+        return full.replace(/charset\s*=\s*(?:"[^"]+"|[^;\s]+)/i, 'charset="UTF-8"');
+      }
+      return full + '; charset="UTF-8"';
+    });
+  } else {
+    updated += '\r\nContent-Type: ' + defaultMimeType + '; charset="UTF-8"';
+  }
+
+  if (/^Content-Transfer-Encoding:/im.test(updated)) {
+    updated = updated.replace(/^Content-Transfer-Encoding:.*(?:\r?\n[ \t].*)*/im, 'Content-Transfer-Encoding: base64');
+  } else {
+    updated += '\r\nContent-Transfer-Encoding: base64';
+  }
+
+  return updated;
+}
+
+/**
+ * プレーンテキスト本文に署名を挿入する（引用文があればその直前、なければ末尾）
+ * 重複チェックは「引用文より上の今回書いたエリア」のみを対象とするため、2往復目以降も正しく付与される
+ */
+function insertSignaturePlain_(text, sig) {
+  var cleanSig = String(sig || '').replace(/\r?\n/g, '\r\n').trim();
+  if (!cleanSig) return text;
+
+  var quotePatterns = [
+    /(?:\r?\n)On [^\r\n]+(?:\r?\n[^\r\n]{1,80})?wrote:\s*(?=\r?\n)/,
+    /(?:\r?\n)\d{4}年\d{1,2}月\d{1,2}日[^\r\n]*(?:\r?\n[^\r\n]{1,80})?:\s*(?=\r?\n)/,
+    /(?:\r?\n)-----Original Message-----/,
+    /(?:\r?\n)>/
+  ];
+
+  var earliestIdx = -1;
+  for (var i = 0; i < quotePatterns.length; i++) {
+    var m = quotePatterns[i].exec(text);
+    if (m && (earliestIdx === -1 || m.index < earliestIdx)) {
+      earliestIdx = m.index;
+    }
+  }
+
+  var targetArea = earliestIdx !== -1 ? text.slice(0, earliestIdx) : text;
+  var normSig = cleanSig.replace(/\r\n/g, '\n');
+  if (targetArea.replace(/\r\n/g, '\n').indexOf(normSig) !== -1) {
+    return text;
+  }
+
+  if (earliestIdx !== -1) {
+    var before = text.slice(0, earliestIdx).replace(/[\r\n]+$/, '');
+    var after = text.slice(earliestIdx).replace(/^\r?\n/, '');
+    return before + '\r\n\r\n' + cleanSig + '\r\n\r\n' + after;
+  }
+
+  return text.replace(/[\r\n]+$/, '') + '\r\n\r\n' + cleanSig + '\r\n';
+}
+
+/**
+ * HTML 本文に署名を挿入する（引用ブロックがあればその直前、なければ </body> 直前または末尾）
+ * 重複チェックは「引用ブロックより上の今回書いたエリア」のみを対象とするため、2往復目以降も正しく付与される
+ */
+function insertSignatureHtml_(html, sig) {
+  var cleanSig = String(sig || '').replace(/\r\n/g, '\n').trim();
+  if (!cleanSig) return html;
+
+  var markers = [
+    /<div\b[^>]*class=["'][^"']*gmail_quote/i,
+    /<blockquote\b/i,
+    /<\/body>/i
+  ];
+
+  var matchIdx = -1;
+  for (var i = 0; i < markers.length; i++) {
+    var m = markers[i].exec(html);
+    if (m) {
+      matchIdx = m.index;
+      break;
+    }
+  }
+
+  var targetHtml = matchIdx !== -1 ? html.slice(0, matchIdx) : html;
+  var escapedSigHtml = escapeHtml_(cleanSig).replace(/\r?\n/g, '<br>');
+  if (targetHtml.indexOf('prismpost-signature') !== -1 || targetHtml.indexOf(escapedSigHtml) !== -1) {
+    return html;
+  }
+
+  var sigHtml = '<br clear="all"><div class="prismpost-signature" style="margin-top:12px;white-space:pre-wrap;">' +
+    escapedSigHtml +
+    '</div><br>';
+
+  if (matchIdx !== -1) {
+    return html.slice(0, matchIdx) + sigHtml + html.slice(matchIdx);
+  }
+
+  return html + sigHtml;
+}
+
+function escapeRegExp_(str) {
+  return String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 /**
@@ -967,14 +1298,47 @@ function buildSettingsCard_(noticeText) {
       .setHint('例:\ninfo@domain-a.com | 株式会社A サポート\ntaro@domain-b.jp | 山田 太郎')
   );
 
-  section.addWidget(
+  card.addSection(section);
+
+  // 差出人ごとの署名設定セクション
+  var profiles = parseSenderProfiles_(settings);
+  var sigSection = CardService.newCardSection().setHeader('✍️ 差出人ごとの署名設定（任意・複数行可）');
+
+  if (profiles.length === 0) {
+    sigSection.addWidget(
+      CardService.newTextParagraph().setText(
+        '上の「差出人アドレス一覧」を登録して一度保存すると、ここにアドレスごとの署名入力欄が自動で表示されます。'
+      )
+    );
+  } else {
+    sigSection.addWidget(
+      CardService.newTextParagraph().setText(
+        '<i>※新しいアドレスを追加した場合は、一度下の「💾 設定を保存」を押してから設定画面を開き直すとそのアドレス用の署名欄が表示されます。</i>'
+      )
+    );
+    for (var i = 0; i < profiles.length; i++) {
+      var p = profiles[i];
+      var emailKey = p.email.toLowerCase();
+      var labelTitle = '✍️ ' + (p.name ? (p.name + ' <' + p.email + '>') : p.email) + ' の署名';
+      sigSection.addWidget(
+        CardService.newTextInput()
+          .setFieldName('sig__' + emailKey)
+          .setTitle(labelTitle)
+          .setMultiline(true)
+          .setValue((settings.signatures && settings.signatures[emailKey]) || '')
+          .setHint('返信文のすぐ下（引用文の上）に自動挿入されます。空欄なら署名なし。')
+      );
+    }
+  }
+
+  sigSection.addWidget(
     CardService.newTextButton()
       .setText('💾 設定を保存してさくらサーバと連携')
       .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
       .setOnClickAction(CardService.newAction().setFunctionName('onSaveSettings'))
   );
 
-  card.addSection(section);
+  card.addSection(sigSection);
   return card.build();
 }
 
@@ -991,6 +1355,18 @@ function onSaveSettings(e) {
   if (form.sender_profiles !== undefined) {
     props.setProperty('SENDER_PROFILES', form.sender_profiles.trim());
   }
+
+  var signatures = getSettings_().signatures || {};
+  var formKeys = Object.keys(form);
+  for (var kIdx = 0; kIdx < formKeys.length; kIdx++) {
+    var formKey = formKeys[kIdx];
+    if (formKey.indexOf('sig__') === 0) {
+      var emailKey = formKey.slice(5).toLowerCase();
+      signatures[emailKey] = String(form[formKey] || '').replace(/\r\n/g, '\n').trim();
+    }
+  }
+  props.setProperty('SIGNATURES_JSON', JSON.stringify(signatures));
+
   props.deleteProperty('SECRET_TOKEN');
   props.deleteProperty('API_KEY');
 
