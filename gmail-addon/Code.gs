@@ -102,6 +102,7 @@ function onGmailMessageOpen(e) {
     threadId: thread.getId(),
     detectedEmail: detectedProfile.email,
     detectedName: detectedProfile.name,
+    isSentViaPrismPost: isMessageSentViaPrismPost_(message),
     settings: settings,
     draft: draft
   });
@@ -205,6 +206,17 @@ function buildThreadReplyCard_(params) {
       .setTitle('PrismPost 独自ドメイン返信')
       .setSubtitle('さくらのレンタルサーバ経由で送信')
   );
+
+  if (params.isSentViaPrismPost) {
+    card.addSection(
+      CardService.newCardSection().addWidget(
+        CardService.newDecoratedText()
+          .setTopLabel('送信履歴ステータス')
+          .setText('✅ このメールは PrismPost（独自ドメイン）で送信済みです')
+          .setWrapText(true)
+      )
+    );
+  }
 
   var senderSection = CardService.newCardSection().setHeader('1. 差出人（複数ドメイン対応）');
   addSenderSelectionWidgets_(senderSection, params.settings, params.detectedEmail, params.detectedName);
@@ -401,6 +413,7 @@ function onReloadThreadCard(e) {
     threadId: thread.getId(),
     detectedEmail: selected.email || detected.email,
     detectedName: selected.name || detected.name,
+    isSentViaPrismPost: isMessageSentViaPrismPost_(message),
     settings: settings,
     draft: draft
   });
@@ -665,9 +678,12 @@ function buildRewrittenMime_(rawMime, fromEmail, fromName, customHeaders) {
   // 送信用は Bcc ヘッダー行を取り除く（エンベロープ宛先のみで配送するため）
   var outboundHeaderPart = headerPart.replace(/^Bcc:.*(?:\r?\n[ \t].*)*\r?\n?/im, '');
 
+  // 自分の Gmail スレッドに保存する控えにだけ内部判定用ヘッダーを付与（相手には送らない）
+  var sentCopyHeaderPart = 'X-PrismPost-Sent: true\r\n' + headerPart;
+
   return {
     outboundMime: outboundHeaderPart + bodyPart,
-    sentCopyMime: headerPart + bodyPart
+    sentCopyMime: sentCopyHeaderPart + bodyPart
   };
 }
 
@@ -684,17 +700,58 @@ function formatMimeAddress_(email, name) {
 }
 
 /**
- * 送信したメールの控えを Gmail の該当スレッドに「SENT（送信済み）」として追加する
+ * 開いているメールが PrismPost 経由で送信されたものか判定する
+ */
+function isMessageSentViaPrismPost_(message) {
+  if (!message) return false;
+  try {
+    return (message.getHeader('X-PrismPost-Sent') || '').trim().toLowerCase() === 'true';
+  } catch (ignoreErr) {
+    return false;
+  }
+}
+
+/**
+ * Gmail 上に「PrismPost」ラベルを取得（なければ自動作成）してラベル ID を返す
+ */
+function getOrCreatePrismPostLabelId_() {
+  try {
+    var listRes = Gmail.Users.Labels.list('me');
+    var labels = (listRes && listRes.labels) ? listRes.labels : [];
+    for (var i = 0; i < labels.length; i++) {
+      if (labels[i].name === 'PrismPost') {
+        return labels[i].id;
+      }
+    }
+    var created = Gmail.Users.Labels.create({
+      name: 'PrismPost',
+      labelListVisibility: 'labelShow',
+      messageListVisibility: 'show'
+    }, 'me');
+    return created && created.id ? created.id : null;
+  } catch (err) {
+    console.warn('Could not get or create PrismPost label:', err);
+    return null;
+  }
+}
+
+/**
+ * 送信したメールの控えを Gmail の該当スレッドに「SENT（送信済み）」＋「PrismPost」ラベル付きで追加する
  * 小容量（2MB未満）は標準API、大容量添付ファイル付き（最大35MB）は upload エンドポイントを使用
  */
 function insertSentMimeToGmailThread_(sentCopyMime, threadId) {
   var mimeBytes = Utilities.newBlob(sentCopyMime).getBytes();
+  var labelIds = ['SENT'];
+  var prismPostLabelId = getOrCreatePrismPostLabelId_();
+  if (prismPostLabelId) {
+    labelIds.push(prismPostLabelId);
+  }
 
   if (mimeBytes.length < 2 * 1024 * 1024) {
     var encoded = Utilities.base64EncodeWebSafe(mimeBytes);
     var resource = {
       raw: encoded,
-      labelIds: ['SENT']
+      labelIds: labelIds
     };
     if (threadId) {
       resource.threadId = threadId;
@@ -703,7 +760,7 @@ function insertSentMimeToGmailThread_(sentCopyMime, threadId) {
     return;
   }
 
-  var metadata = { labelIds: ['SENT'] };
+  var metadata = { labelIds: labelIds };
   if (threadId) metadata.threadId = threadId;
 
   var boundary = 'prismpost_upload_' + Utilities.getUuid();
