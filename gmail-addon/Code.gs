@@ -1,13 +1,14 @@
 /**
  * PrismPost Gmail Add-on (Google Apps Script)
  * さくらのレンタルサーバ（PHP中継）＋ 複数独自ドメイン専用版
+ * （秘密トークン不要・Google OIDC 電子署名認証版）
  *
  * 機能:
  * 1. さくらインターネットから転送されたメールのヘッダー（X-Original-To / Delivered-To / To / Cc 等）を解析し、
  *    登録済みの複数独自ドメインから最適な「差出人アドレス・表示名」を自動選択
  * 2. Gmail上で（Gemini AI等を使って）作成した「返信・全員に返信・新規下書き（To/Cc/Bcc/本文/HTML/添付ファイル）」を取得
  * 3. 個人Gmailの痕跡（From や Message-ID の @mail.gmail.com）を独自ドメインに書き換え、
- *    HMAC-SHA256 署名付き HTTPS 通信でさくらのレンタルサーバ上の PHP 経由で直接送信
+ *    Google公式電子署名 (OIDC IDトークン) ＋ HMAC-SHA256 署名付き HTTPS 通信でさくらのレンタルサーバ上の PHP 経由で直接送信
  * 4. 送信したメールを Gmail のスレッドに「送信済み (SENT)」として自動追加（次回以降も Gemini AI が文脈を認識可能）
  */
 
@@ -18,7 +19,6 @@ function getSettings_() {
   var props = PropertiesService.getUserProperties();
   return {
     sakuraEndpointUrl: props.getProperty('SAKURA_ENDPOINT_URL') || '',
-    secretToken: props.getProperty('SECRET_TOKEN') || props.getProperty('API_KEY') || '',
     senderProfilesRaw: props.getProperty('SENDER_PROFILES') || ''
   };
 }
@@ -27,7 +27,7 @@ function getSettings_() {
  * 設定が初期化済みか判定
  */
 function hasValidSettings_(settings) {
-  return Boolean(settings.sakuraEndpointUrl && settings.secretToken && settings.senderProfilesRaw);
+  return Boolean(settings.sakuraEndpointUrl && settings.senderProfilesRaw);
 }
 
 /**
@@ -81,7 +81,7 @@ function parseSenderProfiles_(settings) {
 function onGmailMessageOpen(e) {
   var settings = getSettings_();
   if (!hasValidSettings_(settings)) {
-    return buildSettingsCard_('最初に「さくらのPHP URL」「秘密トークン」「差出人アドレス一覧」を設定してください。');
+    return buildSettingsCard_('最初に「さくらのPHP URL」と「差出人アドレス一覧」を設定してください。');
   }
 
   var messageId = e.gmail.messageId;
@@ -113,7 +113,7 @@ function onGmailMessageOpen(e) {
 function onHomepage(e) {
   var settings = getSettings_();
   if (!hasValidSettings_(settings)) {
-    return buildSettingsCard_('最初に「さくらのPHP URL」「秘密トークン」「差出人アドレス一覧」を設定してください。');
+    return buildSettingsCard_('最初に「さくらのPHP URL」と「差出人アドレス一覧」を設定してください。');
   }
   return buildComposeDraftListCard_(settings);
 }
@@ -124,7 +124,7 @@ function onHomepage(e) {
 function onGmailCompose(e) {
   var settings = getSettings_();
   if (!hasValidSettings_(settings)) {
-    return buildSettingsCard_('最初に「さくらのPHP URL」「秘密トークン」「差出人アドレス一覧」を設定してください。');
+    return buildSettingsCard_('最初に「さくらのPHP URL」と「差出人アドレス一覧」を設定してください。');
   }
   return buildComposeDraftListCard_(settings);
 }
@@ -438,9 +438,16 @@ function onSendDraft(e) {
       .build();
   }
 
-  if (!settings.sakuraEndpointUrl || !settings.secretToken) {
+  if (!settings.sakuraEndpointUrl) {
     return CardService.newActionResponseBuilder()
-      .setNotification(CardService.newNotification().setText('❌ エラー: さくらのPHP URLまたは秘密トークンが設定されていません'))
+      .setNotification(CardService.newNotification().setText('❌ エラー: さくらのPHP URLが設定されていません'))
+      .build();
+  }
+
+  var idToken = ScriptApp.getIdentityToken();
+  if (!idToken) {
+    return CardService.newActionResponseBuilder()
+      .setNotification(CardService.newNotification().setText('❌ エラー: Google IDトークンを取得できません。アドオンの権限を再承認してください'))
       .build();
   }
 
@@ -486,7 +493,7 @@ function onSendDraft(e) {
 
   var sendResult = sendViaSakuraPhp_({
     endpointUrl: settings.sakuraEndpointUrl,
-    secretToken: settings.secretToken,
+    idToken: idToken,
     fromEmail: fromEmail,
     recipients: allEnvelopeRecipients,
     rawMime: mimePrepared.outboundMime
@@ -543,27 +550,23 @@ function onSendDraft(e) {
 }
 
 /**
- * さくらのレンタルサーバ上の PHP エンドポイント経由で送信
- * HMAC-SHA256 署名（タイムスタンプ付き）により、通信経路上に秘密トークン自体を流さずリプレイ攻撃も防ぐ
+ * さくらのレンタルサーバ上の PHP エンドポイントへ署名付き POST リクエストを送る共通関数
  */
-function sendViaSakuraPhp_(params) {
-  var payloadStr = JSON.stringify({
-    from_email: params.fromEmail,
-    recipients: params.recipients,
-    raw_mime: params.rawMime
-  });
-
+function postSignedToSakura_(endpointUrl, idToken, payloadObj) {
+  var payloadStr = JSON.stringify(payloadObj);
   var timestamp = String(Math.floor(Date.now() / 1000));
   var sigBytes = Utilities.computeHmacSha256Signature(
     Utilities.newBlob(timestamp + '.' + payloadStr).getBytes(),
-    Utilities.newBlob(params.secretToken).getBytes()
+    Utilities.newBlob(idToken).getBytes()
   );
   var signatureHex = bytesToHex_(sigBytes);
 
-  var response = UrlFetchApp.fetch(params.endpointUrl, {
+  var response = UrlFetchApp.fetch(endpointUrl, {
     method: 'post',
     contentType: 'application/json',
     headers: {
+      Authorization: 'Bearer ' + idToken,
+      'X-PrismPost-Id-Token': idToken,
       'X-PrismPost-Timestamp': timestamp,
       'X-PrismPost-Signature': signatureHex
     },
@@ -576,6 +579,52 @@ function sendViaSakuraPhp_(params) {
     ok: code >= 200 && code < 300,
     status: code,
     body: response.getContentText()
+  };
+}
+
+/**
+ * さくらのレンタルサーバ上の PHP エンドポイント経由で送信
+ * Google OIDC IDトークン + HMAC-SHA256 署名（タイムスタンプ付き）で安全に認証する
+ */
+function sendViaSakuraPhp_(params) {
+  var idToken = params.idToken || ScriptApp.getIdentityToken();
+  return postSignedToSakura_(params.endpointUrl, idToken, {
+    action: 'send',
+    from_email: params.fromEmail,
+    recipients: params.recipients,
+    raw_mime: params.rawMime
+  });
+}
+
+/**
+ * 設定保存時にさくらサーバと Google アカウントのペアリング（所有者ロック・許可ドメイン同期）を行う
+ */
+function pairWithSakuraServer_(endpointUrl, allowedDomains) {
+  var idToken = ScriptApp.getIdentityToken();
+  if (!idToken) {
+    return {
+      ok: false,
+      status: 0,
+      body: 'Google IDトークンを取得できませんでした。アドオンの権限を再承認してください。'
+    };
+  }
+
+  var res = postSignedToSakura_(endpointUrl, idToken, {
+    action: 'pair',
+    allowed_domains: allowedDomains
+  });
+
+  var parsed = null;
+  try {
+    parsed = JSON.parse(res.body);
+  } catch (ignoreErr) {}
+
+  return {
+    ok: res.ok && parsed && parsed.ok === true,
+    status: res.status,
+    body: res.body,
+    ownerEmail: parsed && parsed.owner_email ? parsed.owner_email : '',
+    allowedDomains: parsed && parsed.allowed_domains ? parsed.allowed_domains : allowedDomains
   };
 }
 
@@ -787,20 +836,21 @@ function buildSettingsCard_(noticeText) {
     section.addWidget(CardService.newTextParagraph().setText('ℹ️ ' + noticeText));
   }
 
+  var myEmail = Session.getActiveUser().getEmail() || '(取得できません)';
+  section.addWidget(
+    CardService.newDecoratedText()
+      .setTopLabel('認証方式（秘密トークン不要）')
+      .setText(myEmail)
+      .setBottomLabel('Google公式電子署名（OIDC）により自動認証されます。パスワード等の入力は不要です。')
+      .setWrapText(true)
+  );
+
   section.addWidget(
     CardService.newTextInput()
       .setFieldName('sakura_endpoint_url')
       .setTitle('さくらサーバに設置した PHP の URL (必須)')
       .setValue(settings.sakuraEndpointUrl)
       .setHint('例: https://yourdomain.com/prismpost-send.php')
-  );
-
-  section.addWidget(
-    CardService.newTextInput()
-      .setFieldName('secret_token')
-      .setTitle('秘密トークン ($SECRET_TOKEN) (必須)')
-      .setValue(settings.secretToken)
-      .setHint('sakura-relay.php に設定した16文字以上のランダム文字列')
   );
 
   section.addWidget(
@@ -814,7 +864,7 @@ function buildSettingsCard_(noticeText) {
 
   section.addWidget(
     CardService.newTextButton()
-      .setText('💾 設定を保存')
+      .setText('💾 設定を保存してさくらサーバと連携')
       .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
       .setOnClickAction(CardService.newAction().setFunctionName('onSaveSettings'))
   );
@@ -824,7 +874,7 @@ function buildSettingsCard_(noticeText) {
 }
 
 /**
- * 設定を保存するアクション
+ * 設定を保存し、さくらサーバと Google アカウントのペアリングを実行するアクション
  */
 function onSaveSettings(e) {
   var form = e.formInput || {};
@@ -833,15 +883,53 @@ function onSaveSettings(e) {
   if (form.sakura_endpoint_url !== undefined) {
     props.setProperty('SAKURA_ENDPOINT_URL', form.sakura_endpoint_url.trim());
   }
-  if (form.secret_token !== undefined) {
-    props.setProperty('SECRET_TOKEN', form.secret_token.trim());
-  }
   if (form.sender_profiles !== undefined) {
     props.setProperty('SENDER_PROFILES', form.sender_profiles.trim());
   }
+  props.deleteProperty('SECRET_TOKEN');
+  props.deleteProperty('API_KEY');
+
+  var settings = getSettings_();
+  if (!settings.sakuraEndpointUrl || settings.sakuraEndpointUrl.indexOf('https://') !== 0) {
+    return CardService.newActionResponseBuilder()
+      .setNavigation(CardService.newNavigation().updateCard(
+        buildSettingsCard_('❌ さくらサーバの PHP URL は https:// から始まる URL を入力してください。')
+      ))
+      .setNotification(CardService.newNotification().setText('❌ https:// の URL を入力してください'))
+      .build();
+  }
+
+  var profiles = parseSenderProfiles_(settings);
+  if (profiles.length === 0) {
+    return CardService.newActionResponseBuilder()
+      .setNavigation(CardService.newNavigation().updateCard(
+        buildSettingsCard_('❌ 有効な差出人メールアドレスを1件以上入力してください。')
+      ))
+      .setNotification(CardService.newNotification().setText('❌ 差出人アドレスを入力してください'))
+      .build();
+  }
+
+  var domainMap = {};
+  var allowedDomains = [];
+  for (var i = 0; i < profiles.length; i++) {
+    if (!domainMap[profiles[i].domain]) {
+      domainMap[profiles[i].domain] = true;
+      allowedDomains.push(profiles[i].domain);
+    }
+  }
+
+  var pairResult = pairWithSakuraServer_(settings.sakuraEndpointUrl, allowedDomains);
+  if (!pairResult.ok) {
+    return CardService.newActionResponseBuilder()
+      .setNavigation(CardService.newNavigation().updateCard(
+        buildSettingsCard_('⚠️ 設定は保存されましたが、さくらサーバとの連携確認に失敗しました (' + pairResult.status + '): ' + pairResult.body)
+      ))
+      .setNotification(CardService.newNotification().setText('❌ サーバ連携失敗 (' + pairResult.status + ')'))
+      .build();
+  }
 
   return CardService.newActionResponseBuilder()
-    .setNotification(CardService.newNotification().setText('✅ 設定を保存しました'))
+    .setNotification(CardService.newNotification().setText('✅ 設定保存＆さくらサーバ連携完了 (' + pairResult.ownerEmail + ')'))
     .setNavigation(CardService.newNavigation().popToRoot())
     .build();
 }
