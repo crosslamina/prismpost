@@ -30,7 +30,7 @@ prismpost/
    * **「🚀 独自ドメインで送信」** を押すと、`From` ヘッダーおよび `Message-ID` の `@mail.gmail.com` を独自ドメインに書き換え、[`sakura-relay.php`](./gmail-addon/sakura-relay.php) 経由で**さくらのメールサーバー（`sendmail`）から直接送信**します。
    * 送信と同時に Gmail の該当スレッドに「送信済み（`SENT`）」として自動記録され、元の下書きは削除されます。
 3. **セキュリティと添付ファイル対応**:
-   * **秘密トークン不要（Google OIDC 電子署名認証）**: Google Apps Script が発行する Google 公式の ID トークン（RS256 公開鍵暗号署名）をさくら側で検証します。初回設定時に Web 非公開領域（`/home/<さくらID>/.prismpost-owner.json`・パーミッション `0600`）へあなたの Google アカウント（`sub` / `email` / `aud` / 許可ドメイン一覧）を自動ロックするため、**PHP ファイルへパスワードや秘密トークンを書き込む必要がありません**。
+   * **秘密トークン不要（Google OIDC 電子署名認証）**: Google Apps Script が発行する Google 公式の ID トークン（RS256 公開鍵暗号署名）をさくら側で検証します。初回設定時に Web 非公開領域（`/home/<さくらID>/.prismpost-owner-<PHPファイル名>.json`・パーミッション `0600`）へあなたの Google アカウント（`sub` / `email` / `aud` / 許可ドメイン一覧）を自動ロックするため、**PHP ファイルへパスワードや秘密トークンを書き込む必要がありません**。
    * **HMAC-SHA256 署名 ＋ 5分以内のタイムスタンプ検証**: メール送信ごとに署名と有効期限をチェックし、リプレイ攻撃や改ざんを防止します。
    * **OSコマンドインジェクション完全防止**: シェル（`/bin/sh`）を介さない `proc_open` 配列実行と厳格なアドレス検証を採用しています。
    * **添付ファイル完全対応**: Gmail が生成した MIME データをそのまま転送し、Gmail スレッドへの保存も大容量対応（Upload API 最大35MB）しています。
@@ -71,8 +71,20 @@ prismpost/
      taro@domain-b.jp | 山田 太郎
      contact@domain-c.net | Cプロジェクト事務局
      ```
-3. これにより、Google 公式の電子署名を使ってさくらサーバと自動ペアリングされ、Web 非公開領域（`/home/<さくらID>/.prismpost-owner.json`）にあなたの Google アカウントと許可ドメインが自動ロックされます。
-   * *(補足)* もし別の Google アカウントや新しい Apps Script プロジェクトを作り直して再連携したい場合は、さくらサーバ上の `~/.prismpost-owner.json` を削除してから再度「設定を保存」を押してください。
+3. これにより、Google 公式の電子署名を使ってさくらサーバと自動ペアリングされ、Web 非公開領域（`/home/<さくらID>/.prismpost-owner-<PHPファイル名>.json`）にあなたの Google アカウントと許可ドメインが自動ロックされます。
+   * *(補足)* もし別の Google アカウントや新しい Apps Script プロジェクトを作り直して再連携したい場合は、さくらサーバ上の `~/.prismpost-owner-<PHPファイル名>.json` を削除してから再度「設定を保存」を押してください。
+
+---
+
+## 👨‍👩‍👧‍👦 家族・チーム（別Googleアカウント）でも併用したい場合
+
+1. **さくらサーバ側**:
+   * 同じ [`sakura-relay.php`](./gmail-addon/sakura-relay.php) を、**別のファイル名**（例：`prismpost-wife.php` など）でもう1つ公開フォルダへアップロードします（ファイル名は無編集のままでOK）。
+   * ロックファイルも PHP ファイル名ごとに別名（`~/.prismpost-owner-prismpost-wife.json`）で自動分離されるため、お互いの設定や許可ドメインが混ざりません。
+2. **Apps Script アドオン側**:
+   * 作成済みの Google Apps Script プロジェクト右上の「共有」ボタンから、家族・メンバーの Google アカウントを **編集者** として追加します。
+   * 相手のブラウザで共有されたプロジェクトを開き、「デプロイ」＞「デプロイをテスト」＞「インストール」を押します。
+   * 相手の Gmail からアドオン設定を開き、2つ目の PHP URL（`https://yourdomain.com/prismpost-wife.php`）と相手用の差出人一覧を保存すれば完了です（`UserProperties` は Google アカウントごとに完全分離されます）。
 
 ---
 

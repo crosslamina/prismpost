@@ -8,8 +8,8 @@
  * 2. HTTPS通信必須（平文HTTPでのアクセスは拒否）。
  * 3. Google Apps Script が発行する「Google公式電子署名（OIDC IDトークン）」を公開鍵暗号（RS256）で検証し、
  *    あなた本人の Google アカウントからの通信のみを許可します（秘密トークンの事前設定・共有は不要）。
- * 4. 初回接続（アドオンで設定保存）時に、Web非公開領域（~/.prismpost-owner.json, パーミッション0600）へ
- *    所有者（sub / email / aud / 許可ドメイン一覧）を自動記録してロックします。
+ * 4. 初回接続（アドオンで設定保存）時に、Web非公開領域（~/.prismpost-owner-<PHPファイル名>.json, パーミッション0600）へ
+ *    所有者（sub / email / aud / 許可ドメイン一覧）を自動記録してロックします（複数人分を別ファイル名で設置可能）。
  * 5. メール送信時は IDトークンを使った HMAC-SHA256 署名 ＋ 5分以内のタイムスタンプ検証により
  *    リプレイ攻撃・改ざんを防止します。
  * 6. 厳格なメールアドレス検証と proc_open 配列実行によりシェル(/bin/sh)を介さず sendmail を直接実行します。
@@ -216,6 +216,12 @@ function isOutsideDir(string $candidateDir, string $protectedDir): bool
 
 function getOwnerConfigPath(): string
 {
+    $rawSlug = basename(__FILE__, '.php');
+    $scriptSlug = preg_replace('/[^A-Za-z0-9_-]/', '_', (string)$rawSlug);
+    if ($scriptSlug === null || $scriptSlug === '') {
+        $scriptSlug = 'default';
+    }
+
     $candidates = [];
     if (!empty($_SERVER['HOME'])) {
         $candidates[] = (string)$_SERVER['HOME'];
@@ -238,12 +244,12 @@ function getOwnerConfigPath(): string
     $docRoot = !empty($_SERVER['DOCUMENT_ROOT']) ? (string)$_SERVER['DOCUMENT_ROOT'] : __DIR__;
     foreach ($candidates as $dir) {
         if ($dir !== '' && is_dir($dir) && is_writable($dir) && isOutsideDir($dir, $docRoot) && isOutsideDir($dir, __DIR__)) {
-            return rtrim($dir, '/\\') . '/.prismpost-owner.json';
+            return rtrim($dir, '/\\') . '/.prismpost-owner-' . $scriptSlug . '.json';
         }
     }
 
     // ApacheでHTTPアクセスが標準ブロックされる .ht* ファイル名へフォールバック
-    return __DIR__ . '/.ht_prismpost_owner.json';
+    return __DIR__ . '/.ht_prismpost_owner_' . $scriptSlug . '.json';
 }
 
 function extractBearerToken(): string
@@ -328,7 +334,7 @@ if ($ALLOWED_GMAIL_ADDRESS !== '' && $callerEmail !== strtolower(trim($ALLOWED_G
     respondJson(403, ['ok' => false, 'error' => 'Forbidden (Google account is not in ALLOWED_GMAIL_ADDRESS)']);
 }
 
-// 4. 所有者ロック設定ファイル (.prismpost-owner.json) の読み込みと検証
+// 4. 所有者ロック設定ファイル (.prismpost-owner-<PHPファイル名>.json) の読み込みと検証
 $ownerPath = getOwnerConfigPath();
 $existingOwner = null;
 if (is_file($ownerPath)) {
