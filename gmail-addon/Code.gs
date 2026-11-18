@@ -148,23 +148,11 @@ function addSenderSelectionWidgets_(section, settings, selectedEmail, selectedNa
     }
 
     section.addWidget(dropdown);
+  } else {
+    section.addWidget(
+      CardService.newTextParagraph().setText('⚠️ 差出人アドレスが未登録です。右上のメニュー「⚙️ 設定」から登録してください。')
+    );
   }
-
-  section.addWidget(
-    CardService.newTextInput()
-      .setFieldName('custom_from_email')
-      .setTitle('差出人アドレスの手動上書き（任意）')
-      .setValue(profiles.length === 0 ? (selectedEmail || '') : '')
-      .setHint('空欄なら上のプルダウンのアドレスを使用します')
-  );
-
-  section.addWidget(
-    CardService.newTextInput()
-      .setFieldName('custom_from_name')
-      .setTitle('表示名の手動上書き（任意）')
-      .setValue(profiles.length === 0 ? (selectedName || '') : '')
-      .setHint('空欄なら登録済みの表示名を使用します')
-  );
 }
 
 /**
@@ -172,8 +160,6 @@ function addSenderSelectionWidgets_(section, settings, selectedEmail, selectedNa
  */
 function resolveSelectedSender_(formInput, settings) {
   var form = formInput || {};
-  var customEmail = (form.custom_from_email || '').trim();
-  var customName = (form.custom_from_name || '').trim();
   var selectedProfile = form.selected_profile || '';
 
   var profileEmail = '';
@@ -186,13 +172,17 @@ function resolveSelectedSender_(formInput, settings) {
     profileEmail = selectedProfile.trim();
   }
 
-  var profiles = parseSenderProfiles_(settings);
-  var fallbackEmail = profiles.length > 0 ? profiles[0].email : '';
-  var fallbackName = profiles.length > 0 ? profiles[0].name : '';
+  if (profileEmail) {
+    return {
+      email: profileEmail,
+      name: profileName
+    };
+  }
 
+  var profiles = parseSenderProfiles_(settings);
   return {
-    email: customEmail || profileEmail || fallbackEmail,
-    name: customName || profileName || fallbackName
+    email: profiles.length > 0 ? profiles[0].email : '',
+    name: profiles.length > 0 ? profiles[0].name : ''
   };
 }
 
