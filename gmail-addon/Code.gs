@@ -18,11 +18,14 @@ var PRISM_ICON_URL = 'https://fonts.gstatic.com/s/e/notoemoji/latest/1f48e/512.p
  * 共通のプリズムアイコン付きカードヘッダーを生成
  */
 function buildPrismHeader_(title, subtitle) {
-  return CardService.newCardHeader()
+  var header = CardService.newCardHeader()
     .setTitle(title)
-    .setSubtitle(subtitle)
     .setImageUrl(PRISM_ICON_URL)
     .setImageStyle(CardService.ImageStyle.CIRCLE);
+  if (subtitle) {
+    header.setSubtitle(subtitle);
+  }
+  return header;
 }
 
 /**
@@ -105,7 +108,7 @@ function parseSenderProfiles_(settings) {
 function onGmailMessageOpen(e) {
   var settings = getSettings_();
   if (!hasValidSettings_(settings)) {
-    return buildSettingsCard_('最初に「さくらのPHP URL」と「差出人アドレス一覧」を設定してください。');
+    return buildSettingsCard_('URL と差出人一覧を設定してください。');
   }
 
   var messageId = e.gmail.messageId;
@@ -138,7 +141,7 @@ function onGmailMessageOpen(e) {
 function onHomepage(e) {
   var settings = getSettings_();
   if (!hasValidSettings_(settings)) {
-    return buildSettingsCard_('最初に「さくらのPHP URL」と「差出人アドレス一覧」を設定してください。');
+    return buildSettingsCard_('URL と差出人一覧を設定してください。');
   }
   return buildComposeDraftListCard_(settings);
 }
@@ -154,7 +157,7 @@ function addSenderSelectionWidgets_(section, settings, selectedEmail, selectedNa
     var dropdown = CardService.newSelectionInput()
       .setType(CardService.SelectionInputType.DROPDOWN)
       .setFieldName('selected_profile')
-      .setTitle('差出人アカウント（自動検出・切替可）');
+      .setTitle('差出人');
 
     var matched = false;
     for (var i = 0; i < profiles.length; i++) {
@@ -177,11 +180,11 @@ function addSenderSelectionWidgets_(section, settings, selectedEmail, selectedNa
     var sigToggle = CardService.newSelectionInput()
       .setType(CardService.SelectionInputType.CHECK_BOX)
       .setFieldName('append_signature')
-      .addItem('✍️ 選択した差出人の署名を自動挿入する', 'true', sigChecked);
+      .addItem('✍️ 署名を挿入', 'true', sigChecked);
     section.addWidget(sigToggle);
   } else {
     section.addWidget(
-      CardService.newTextParagraph().setText('⚠️ 差出人アドレスが未登録です。右上のメニュー「⚙️ 設定」から登録してください。')
+      CardService.newTextParagraph().setText('⚠️ 差出人が未登録です。「⚙️ 設定」から登録してください。')
     );
   }
 }
@@ -237,35 +240,29 @@ function resolveSelectedSender_(formInput, settings) {
 function buildThreadReplyCard_(params) {
   var card = CardService.newCardBuilder();
   card.setHeader(
-    buildPrismHeader_('PrismPost 独自ドメイン返信', 'さくらのレンタルサーバ経由で送信')
+    buildPrismHeader_('PrismPost')
   );
 
   if (params.isSentViaPrismPost) {
     card.addSection(
       CardService.newCardSection().addWidget(
         CardService.newDecoratedText()
-          .setTopLabel('送信履歴ステータス')
-          .setText('✅ このメールは PrismPost（独自ドメイン）で送信済みです')
+          .setTopLabel('ステータス')
+          .setText('✅ PrismPost 送信済み')
           .setWrapText(true)
       )
     );
   }
 
-  var senderSection = CardService.newCardSection().setHeader('1. 差出人（複数ドメイン対応）');
+  var senderSection = CardService.newCardSection().setHeader('差出人');
   addSenderSelectionWidgets_(senderSection, params.settings, params.detectedEmail, params.detectedName, params.appendSignature);
   card.addSection(senderSection);
 
-  var draftSection = CardService.newCardSection().setHeader('2. 返信下書き（Gemini作成対応）');
+  var draftSection = CardService.newCardSection().setHeader('下書き');
 
   if (!params.draft) {
     draftSection.addWidget(
-      CardService.newTextParagraph().setText(
-        '⚠️ <b>このスレッドに返信の下書きが見つかりません。</b><br><br>' +
-        '① Gmail画面で「返信」または「全員に返信」を押す<br>' +
-        '② 必要に応じて <b>Gemini AI</b> で返信文を作成する<br>' +
-        '③ 下の「🔄 下書きを再読み込み」を押してください。<br>' +
-        '<i>※Gmailの青い「送信」ボタンは押さないでください。</i>'
-      )
+      CardService.newTextParagraph().setText('下書きがありません。')
     );
 
     var reloadAction = CardService.newAction()
@@ -274,7 +271,7 @@ function buildThreadReplyCard_(params) {
 
     draftSection.addWidget(
       CardService.newTextButton()
-        .setText('🔄 下書きを再読み込み')
+        .setText('🔄 再読み込み')
         .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
         .setOnClickAction(reloadAction)
     );
@@ -289,7 +286,7 @@ function buildThreadReplyCard_(params) {
 
     draftSection.addWidget(
       CardService.newDecoratedText()
-        .setTopLabel('宛先 (To)')
+        .setTopLabel('To')
         .setText(toStr)
         .setWrapText(true)
     );
@@ -297,7 +294,7 @@ function buildThreadReplyCard_(params) {
     if (ccStr) {
       draftSection.addWidget(
         CardService.newDecoratedText()
-          .setTopLabel('CC（全員に返信）')
+          .setTopLabel('Cc')
           .setText(ccStr)
           .setWrapText(true)
       );
@@ -306,7 +303,7 @@ function buildThreadReplyCard_(params) {
     if (bccStr) {
       draftSection.addWidget(
         CardService.newDecoratedText()
-          .setTopLabel('BCC')
+          .setTopLabel('Bcc')
           .setText(bccStr)
           .setWrapText(true)
       );
@@ -314,14 +311,14 @@ function buildThreadReplyCard_(params) {
 
     draftSection.addWidget(
       CardService.newDecoratedText()
-        .setTopLabel('件名 (Subject)')
+        .setTopLabel('件名')
         .setText(subjStr)
         .setWrapText(true)
     );
 
     draftSection.addWidget(
       CardService.newDecoratedText()
-        .setTopLabel('本文プレビュー' + (attachments.length > 0 ? '（添付 ' + attachments.length + '件）' : ''))
+        .setTopLabel('本文' + (attachments.length > 0 ? ' (添付' + attachments.length + '件)' : ''))
         .setText(bodyPreview ? bodyPreview + '...' : '(本文が空です)')
         .setWrapText(true)
     );
@@ -342,7 +339,7 @@ function buildThreadReplyCard_(params) {
       CardService.newButtonSet()
         .addButton(
           CardService.newTextButton()
-            .setText('🚀 独自ドメインで送信')
+            .setText('🚀 送信')
             .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
             .setOnClickAction(sendAction)
         )
@@ -356,10 +353,10 @@ function buildThreadReplyCard_(params) {
 
   card.addSection(draftSection);
 
-  var navSection = CardService.newCardSection().setHeader('3. 新規作成・他のメール（スマホ・PC共通）');
+  var navSection = CardService.newCardSection();
   navSection.addWidget(
     CardService.newTextButton()
-      .setText('📝 新規作成・他の下書き一覧へ切り替え')
+      .setText('📝 下書き一覧')
       .setOnClickAction(CardService.newAction().setFunctionName('onOpenComposeDraftList'))
   );
   card.addSection(navSection);
@@ -374,7 +371,7 @@ function onOpenComposeDraftList(e) {
   var settings = getSettings_();
   var nextCard = hasValidSettings_(settings)
     ? buildComposeDraftListCard_(settings)
-    : buildSettingsCard_('最初に「さくらのPHP URL」と「差出人アドレス一覧」を設定してください。');
+    : buildSettingsCard_('URL と差出人一覧を設定してください。');
 
   return CardService.newActionResponseBuilder()
     .setNavigation(CardService.newNavigation().pushCard(nextCard))
@@ -391,23 +388,19 @@ function buildComposeDraftListCard_(settings) {
 
   var card = CardService.newCardBuilder();
   card.setHeader(
-    buildPrismHeader_('PrismPost 新規・下書き送信', 'Gmailの下書きをさくらのレンタルサーバで送信')
+    buildPrismHeader_('下書き一覧')
   );
 
-  var senderSection = CardService.newCardSection().setHeader('1. 差出人を選択');
+  var senderSection = CardService.newCardSection().setHeader('差出人');
   addSenderSelectionWidgets_(senderSection, settings, firstEmail, firstName);
   card.addSection(senderSection);
 
-  var draftSection = CardService.newCardSection().setHeader('2. 送信する下書きを選択（最新5件）');
+  var draftSection = CardService.newCardSection().setHeader('下書き');
   var drafts = getSendableDrafts_(5);
 
   if (drafts.length === 0) {
     draftSection.addWidget(
-      CardService.newTextParagraph().setText(
-        '現在、送信可能な下書き（宛先が入力されている下書き）はありません。<br>' +
-        'Gmail の「作成」ボタンから宛先 (To) と本文（Gemini AI可）を入力してから「🔄 下書き一覧を更新」を押してください。<br>' +
-        '<i>※Gmailのテンプレート（定型文）や宛先未設定の下書きは自動的に除外されます。</i>'
-      )
+      CardService.newTextParagraph().setText('送信可能な下書きがありません。')
     );
   } else {
     for (var i = 0; i < drafts.length; i++) {
@@ -442,7 +435,7 @@ function buildComposeDraftListCard_(settings) {
 
   draftSection.addWidget(
     CardService.newTextButton()
-      .setText('🔄 下書き一覧を更新')
+      .setText('🔄 更新')
       .setOnClickAction(CardService.newAction().setFunctionName('onHomepage'))
   );
 
@@ -595,12 +588,10 @@ function onSendDraft(e) {
       CardService.newCardSection()
         .addWidget(
           CardService.newTextParagraph().setText(
-            '<b>さくらのレンタルサーバ経由でメールを送信しました！</b><br><br>' +
             '<b>From:</b> ' + escapeHtml_(displayFrom) + '<br>' +
             '<b>To:</b> ' + escapeHtml_(toList.join(', ')) + '<br>' +
             (ccList.length > 0 ? '<b>Cc:</b> ' + escapeHtml_(ccList.join(', ')) + '<br>' : '') +
-            '<b>件名:</b> ' + escapeHtml_(subject) + '<br><br>' +
-            '<i>※元の下書きは削除され、Gmailスレッドに送信済み履歴が追加されました。</i>'
+            '<b>件名:</b> ' + escapeHtml_(subject)
           )
         )
     )
@@ -608,7 +599,7 @@ function onSendDraft(e) {
 
   return CardService.newActionResponseBuilder()
     .setNavigation(CardService.newNavigation().updateCard(doneCard))
-    .setNotification(CardService.newNotification().setText('✅ 独自ドメインで送信しました！'))
+    .setNotification(CardService.newNotification().setText('✅ 送信しました'))
     .build();
 }
 
@@ -1264,7 +1255,7 @@ function buildSettingsCard_(noticeText) {
   var settings = getSettings_();
   var card = CardService.newCardBuilder();
   card.setHeader(
-    buildPrismHeader_('⚙️ PrismPost 設定', 'さくらのレンタルサーバ＆複数独自ドメイン設定')
+    buildPrismHeader_('⚙️ 設定')
   );
 
   var section = CardService.newCardSection();
@@ -1275,65 +1266,48 @@ function buildSettingsCard_(noticeText) {
   var myEmail = Session.getActiveUser().getEmail() || '(取得できません)';
   section.addWidget(
     CardService.newDecoratedText()
-      .setTopLabel('認証方式（秘密トークン不要）')
+      .setTopLabel('認証アカウント')
       .setText(myEmail)
-      .setBottomLabel('Google公式電子署名（OIDC）により自動認証されます。パスワード等の入力は不要です。')
       .setWrapText(true)
   );
 
   section.addWidget(
     CardService.newTextInput()
       .setFieldName('sakura_endpoint_url')
-      .setTitle('さくらサーバに設置した PHP の URL (必須)')
+      .setTitle('PHP URL')
       .setValue(settings.sakuraEndpointUrl)
-      .setHint('例: https://yourdomain.com/prismpost-send.php')
+      .setHint('https://yourdomain.com/prismpost-send.php')
   );
 
   section.addWidget(
     CardService.newTextInput()
       .setFieldName('sender_profiles')
-      .setTitle('差出人アドレス一覧（1行に1件・複数ドメイン可）(必須)')
+      .setTitle('差出人一覧（1行1件）')
       .setMultiline(true)
       .setValue(settings.senderProfilesRaw)
-      .setHint('例:\ninfo@domain-a.com | 株式会社A サポート\ntaro@domain-b.jp | 山田 太郎')
+      .setHint('info@example.com | 表示名')
   );
 
   card.addSection(section);
 
-  // 差出人ごとの署名設定セクション
   var profiles = parseSenderProfiles_(settings);
-  var sigSection = CardService.newCardSection().setHeader('✍️ 差出人ごとの署名設定（任意・複数行可）');
+  var sigSection = CardService.newCardSection().setHeader('✍️ 署名');
 
-  if (profiles.length === 0) {
+  for (var i = 0; i < profiles.length; i++) {
+    var p = profiles[i];
+    var emailKey = p.email.toLowerCase();
     sigSection.addWidget(
-      CardService.newTextParagraph().setText(
-        '上の「差出人アドレス一覧」を登録して一度保存すると、ここにアドレスごとの署名入力欄が自動で表示されます。'
-      )
+      CardService.newTextInput()
+        .setFieldName('sig__' + emailKey)
+        .setTitle(p.email)
+        .setMultiline(true)
+        .setValue((settings.signatures && settings.signatures[emailKey]) || '')
     );
-  } else {
-    sigSection.addWidget(
-      CardService.newTextParagraph().setText(
-        '<i>※新しいアドレスを追加した場合は、一度下の「💾 設定を保存」を押してから設定画面を開き直すとそのアドレス用の署名欄が表示されます。</i>'
-      )
-    );
-    for (var i = 0; i < profiles.length; i++) {
-      var p = profiles[i];
-      var emailKey = p.email.toLowerCase();
-      var labelTitle = '✍️ ' + (p.name ? (p.name + ' <' + p.email + '>') : p.email) + ' の署名';
-      sigSection.addWidget(
-        CardService.newTextInput()
-          .setFieldName('sig__' + emailKey)
-          .setTitle(labelTitle)
-          .setMultiline(true)
-          .setValue((settings.signatures && settings.signatures[emailKey]) || '')
-          .setHint('返信文のすぐ下（引用文の上）に自動挿入されます。空欄なら署名なし。')
-      );
-    }
   }
 
   sigSection.addWidget(
     CardService.newTextButton()
-      .setText('💾 設定を保存してさくらサーバと連携')
+      .setText('💾 保存')
       .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
       .setOnClickAction(CardService.newAction().setFunctionName('onSaveSettings'))
   );
@@ -1374,9 +1348,9 @@ function onSaveSettings(e) {
   if (!settings.sakuraEndpointUrl || settings.sakuraEndpointUrl.indexOf('https://') !== 0) {
     return CardService.newActionResponseBuilder()
       .setNavigation(CardService.newNavigation().updateCard(
-        buildSettingsCard_('❌ さくらサーバの PHP URL は https:// から始まる URL を入力してください。')
+        buildSettingsCard_('❌ https:// から始まる URL を入力してください。')
       ))
-      .setNotification(CardService.newNotification().setText('❌ https:// の URL を入力してください'))
+      .setNotification(CardService.newNotification().setText('❌ https:// の URL が必要です'))
       .build();
   }
 
@@ -1384,9 +1358,9 @@ function onSaveSettings(e) {
   if (profiles.length === 0) {
     return CardService.newActionResponseBuilder()
       .setNavigation(CardService.newNavigation().updateCard(
-        buildSettingsCard_('❌ 有効な差出人メールアドレスを1件以上入力してください。')
+        buildSettingsCard_('❌ 差出人メールアドレスを1件以上入力してください。')
       ))
-      .setNotification(CardService.newNotification().setText('❌ 差出人アドレスを入力してください'))
+      .setNotification(CardService.newNotification().setText('❌ 差出人アドレスが必要です'))
       .build();
   }
 
@@ -1403,14 +1377,14 @@ function onSaveSettings(e) {
   if (!pairResult.ok) {
     return CardService.newActionResponseBuilder()
       .setNavigation(CardService.newNavigation().updateCard(
-        buildSettingsCard_('⚠️ 設定は保存されましたが、さくらサーバとの連携確認に失敗しました (' + pairResult.status + '): ' + pairResult.body)
+        buildSettingsCard_('⚠️ 連携失敗 (' + pairResult.status + '): ' + pairResult.body)
       ))
-      .setNotification(CardService.newNotification().setText('❌ サーバ連携失敗 (' + pairResult.status + ')'))
+      .setNotification(CardService.newNotification().setText('❌ 連携失敗 (' + pairResult.status + ')'))
       .build();
   }
 
   return CardService.newActionResponseBuilder()
-    .setNotification(CardService.newNotification().setText('✅ 設定保存＆さくらサーバ連携完了 (' + pairResult.ownerEmail + ')'))
+    .setNotification(CardService.newNotification().setText('✅ 保存しました (' + pairResult.ownerEmail + ')'))
     .setNavigation(CardService.newNavigation().popToRoot())
     .build();
 }
@@ -1473,4 +1447,14 @@ function escapeHtml_(str) {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
+}
+
+/**
+ * デバッグ用：Apps Script エディタ上から自分の UserProperties（保存済み設定）を確認する
+ * エディタ上部の関数選択で「debugShowMyProperties」を選んで「▷ 実行」を押してください
+ */
+function debugShowMyProperties() {
+  var all = PropertiesService.getUserProperties().getProperties();
+  console.log(JSON.stringify(all, null, 2));
+  return all;
 }

@@ -22,7 +22,7 @@
   ],
   "addOns": {
     "common": {
-      "name": "PrismPost (独自ドメイン送信)",
+      "name": "PrismPost",
       "logoUrl": "https://fonts.gstatic.com/s/e/notoemoji/latest/1f48e/512.png",
       "homepageTrigger": {
         "runFunction": "onHomepage",
@@ -30,7 +30,7 @@
       },
       "universalActions": [
         {
-          "label": "⚙️ 設定（さくらサーバ・複数ドメイン設定）",
+          "label": "⚙️ 設定",
           "runFunction": "onOpenSettings"
         }
       ]
