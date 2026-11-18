@@ -23,7 +23,7 @@
   "addOns": {
     "common": {
       "name": "PrismPost (独自ドメイン送信)",
-      "logoUrl": "https://www.gstatic.com/images/icons/material/system/1x/send_black_24dp.png",
+      "logoUrl": "https://fonts.gstatic.com/s/e/notoemoji/latest/1f48e/512.png",
       "homepageTrigger": {
         "runFunction": "onHomepage",
         "enabled": true

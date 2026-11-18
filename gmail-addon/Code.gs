@@ -12,6 +12,19 @@
  * 4. 送信したメールを Gmail のスレッドに「送信済み (SENT)」として自動追加（次回以降も Gemini AI が文脈を認識可能）
  */
 
+var PRISM_ICON_URL = 'https://fonts.gstatic.com/s/e/notoemoji/latest/1f48e/512.png';
+
+/**
+ * 共通のプリズムアイコン付きカードヘッダーを生成
+ */
+function buildPrismHeader_(title, subtitle) {
+  return CardService.newCardHeader()
+    .setTitle(title)
+    .setSubtitle(subtitle)
+    .setImageUrl(PRISM_ICON_URL)
+    .setImageStyle(CardService.ImageStyle.CIRCLE);
+}
+
 /**
  * ユーザー設定の取得
  */
@@ -192,9 +205,7 @@ function resolveSelectedSender_(formInput, settings) {
 function buildThreadReplyCard_(params) {
   var card = CardService.newCardBuilder();
   card.setHeader(
-    CardService.newCardHeader()
-      .setTitle('PrismPost 独自ドメイン返信')
-      .setSubtitle('さくらのレンタルサーバ経由で送信')
+    buildPrismHeader_('PrismPost 独自ドメイン返信', 'さくらのレンタルサーバ経由で送信')
   );
 
   if (params.isSentViaPrismPost) {
@@ -312,7 +323,30 @@ function buildThreadReplyCard_(params) {
   }
 
   card.addSection(draftSection);
+
+  var navSection = CardService.newCardSection().setHeader('3. 新規作成・他のメール（スマホ・PC共通）');
+  navSection.addWidget(
+    CardService.newTextButton()
+      .setText('📝 新規作成・他の下書き一覧へ切り替え')
+      .setOnClickAction(CardService.newAction().setFunctionName('onOpenComposeDraftList'))
+  );
+  card.addSection(navSection);
+
   return card.build();
+}
+
+/**
+ * 新規作成・他の下書き一覧カードへ遷移するアクション（スマホGmailアプリ対応）
+ */
+function onOpenComposeDraftList(e) {
+  var settings = getSettings_();
+  var nextCard = hasValidSettings_(settings)
+    ? buildComposeDraftListCard_(settings)
+    : buildSettingsCard_('最初に「さくらのPHP URL」と「差出人アドレス一覧」を設定してください。');
+
+  return CardService.newActionResponseBuilder()
+    .setNavigation(CardService.newNavigation().pushCard(nextCard))
+    .build();
 }
 
 /**
@@ -325,9 +359,7 @@ function buildComposeDraftListCard_(settings) {
 
   var card = CardService.newCardBuilder();
   card.setHeader(
-    CardService.newCardHeader()
-      .setTitle('PrismPost 新規・下書き送信')
-      .setSubtitle('Gmailの下書きをさくらのレンタルサーバで送信')
+    buildPrismHeader_('PrismPost 新規・下書き送信', 'Gmailの下書きをさくらのレンタルサーバで送信')
   );
 
   var senderSection = CardService.newCardSection().setHeader('1. 差出人を選択');
@@ -517,9 +549,7 @@ function onSendDraft(e) {
 
   var doneCard = CardService.newCardBuilder()
     .setHeader(
-      CardService.newCardHeader()
-        .setTitle('✅ 送信完了')
-        .setSubtitle(displayFrom)
+      buildPrismHeader_('✅ 送信完了', displayFrom)
     )
     .addSection(
       CardService.newCardSection()
@@ -903,9 +933,7 @@ function buildSettingsCard_(noticeText) {
   var settings = getSettings_();
   var card = CardService.newCardBuilder();
   card.setHeader(
-    CardService.newCardHeader()
-      .setTitle('⚙️ PrismPost 設定')
-      .setSubtitle('さくらのレンタルサーバ＆複数独自ドメイン設定')
+    buildPrismHeader_('⚙️ PrismPost 設定', 'さくらのレンタルサーバ＆複数独自ドメイン設定')
   );
 
   var section = CardService.newCardSection();
