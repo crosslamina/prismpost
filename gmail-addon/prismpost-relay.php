@@ -1,10 +1,15 @@
 <?php
 /**
- * PrismPost - さくらのレンタルサーバ用 メール送信中継スクリプト
+ * PrismPost - レンタルサーバー / VPS 汎用 メール送信中継スクリプト
  * （秘密トークン不要・Google OIDC 電子署名認証 ＋ 大容量添付対応版）
  *
+ * 【動作環境】
+ * PHP 7.1+ が動作する一般的なレンタルサーバー / VPS / cPanel 等で利用可能
+ * （さくらのレンタルサーバ / エックスサーバー / ConoHa WING / ロリポップ 等。
+ *   proc_open + sendmail が無効な環境では PHP mail() へ自動フォールバックします）
+ *
  * 【仕組みとセキュリティ仕様】
- * 1. このファイルは編集せずにそのままさくらサーバの公開フォルダへアップロードできます。
+ * 1. このファイルは編集せずにそのまま HTTPS 公開フォルダへアップロードできます。
  * 2. HTTPS通信必須（平文HTTPでのアクセスは拒否）。
  * 3. Google Apps Script が発行する「Google公式電子署名（OIDC IDトークン）」を公開鍵暗号（RS256）で検証し、
  *    あなた本人の Google アカウントからの通信のみを許可します（秘密トークンの事前設定・共有は不要）。
@@ -272,7 +277,7 @@ function extractBearerToken(): string
         return trim($m[1]);
     }
 
-    // さくら等のCGI環境で Authorization ヘッダーが除外された場合用のフォールバック
+    // Apache等のCGI環境で Authorization ヘッダーが除外された場合用のフォールバック
     if (!empty($_SERVER['HTTP_X_PRISMPOST_ID_TOKEN'])) {
         return trim((string)$_SERVER['HTTP_X_PRISMPOST_ID_TOKEN']);
     }
@@ -300,7 +305,7 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     respondJson(405, ['ok' => false, 'error' => 'Method Not Allowed']);
 }
 
-// 2. HTTPS通信の強制（さくらSSL / リバースプロキシ対応）
+// 2. HTTPS通信の強制（レンタルサーバーSSL / リバースプロキシ対応）
 $isHttps = (
     (!empty($_SERVER['HTTPS']) && strtolower((string)$_SERVER['HTTPS']) !== 'off') ||
     (!empty($_SERVER['HTTP_X_FORWARDED_PROTO']) && strtolower((string)$_SERVER['HTTP_X_FORWARDED_PROTO']) === 'https') ||
@@ -465,7 +470,7 @@ if (empty($cleanRecipients) || $rawMime === '') {
 // 7. 改行コードを LF に統一（Unix/FreeBSD sendmail での MIME バウンダリ・添付ファイル破損防止）
 $normalizedMime = preg_replace("/\r\n|\r/", "\n", $rawMime);
 
-// さくらのレンタルサーバ標準の sendmail バイナリへ直接パイプ渡し（シェルを経由しない配列指定）
+// サーバー標準の sendmail バイナリへ直接パイプ渡し（シェルを経由しない配列指定）
 $sendmailPath = '/usr/sbin/sendmail';
 if (!is_executable($sendmailPath)) {
     $sendmailPath = '/usr/lib/sendmail';

@@ -1,15 +1,15 @@
 /**
  * PrismPost Gmail Add-on (Google Apps Script)
- * さくらのレンタルサーバ（PHP中継）＋ 複数独自ドメイン専用版
+ * レンタルサーバー / VPS（PHP中継）＋ 複数独自ドメイン対応版
  * （秘密トークン不要・Google OIDC 電子署名認証版）
  *
  * 機能:
- * 1. さくらインターネットから転送されたメールのヘッダー（X-Original-To / Delivered-To / To / Cc 等）を解析し、
+ * 1. レンタルサーバー等から転送されたメールのヘッダー（X-Original-To / Delivered-To / To / Cc 等）を解析し、
  *    登録済みの複数独自ドメインから最適な「差出人アドレス・表示名」を自動選択
- * 2. Gmail上で（Gemini AI等を使って）作成した「返信・全員に返信・新規下書き（To/Cc/Bcc/本文/HTML/添付ファイル）」を取得
- * 3. 個人Gmailの痕跡（From や Message-ID の @mail.gmail.com）を独自ドメインに書き換え、
- *    Google公式電子署名 (OIDC IDトークン) ＋ HMAC-SHA256 署名付き HTTPS 通信でさくらのレンタルサーバ上の PHP 経由で直接送信
- * 4. 送信したメールを Gmail のスレッドに「送信済み (SENT)」として自動追加（次回以降も Gemini AI が文脈を認識可能）
+ * 2. Gmail上で作成した下書き（To/Cc/Bcc/本文/HTML/添付ファイル）を取得
+ * 3. 個人Gmailの痕跡（From や Message-ID の @mail.gmail.com）を独自ドメインに書き換え、差出人別署名を自動挿入し、
+ *    Google公式電子署名 (OIDC IDトークン) ＋ HMAC-SHA256 署名付き HTTPS 通信で PHP スクリプト経由で直接送信
+ * 4. 送信したメールを Gmail のスレッドに「送信済み (SENT)」として自動追加し、PrismPost ラベルを付与
  */
 
 var PRISM_ICON_URL = 'https://raw.githubusercontent.com/crosslamina/prismpost/main/gmail-addon/prismpost-icon.png';
@@ -29,7 +29,7 @@ function buildPrismHeader_(title, subtitle) {
 }
 
 /**
- * ユーザー設定の取得
+ * ユーザー設定の取得（旧キー SAKURA_ENDPOINT_URL とも後方互換を維持）
  */
 function getSettings_() {
   var props = PropertiesService.getUserProperties();
@@ -44,7 +44,7 @@ function getSettings_() {
     } catch (ignoreErr) {}
   }
   return {
-    sakuraEndpointUrl: props.getProperty('SAKURA_ENDPOINT_URL') || '',
+    endpointUrl: props.getProperty('RELAY_ENDPOINT_URL') || props.getProperty('SAKURA_ENDPOINT_URL') || '',
     senderProfilesRaw: props.getProperty('SENDER_PROFILES') || '',
     signatures: signatures
   };
@@ -54,7 +54,7 @@ function getSettings_() {
  * 設定が初期化済みか判定
  */
 function hasValidSettings_(settings) {
-  return Boolean(settings.sakuraEndpointUrl && settings.senderProfilesRaw);
+  return Boolean(settings.endpointUrl && settings.senderProfilesRaw);
 }
 
 /**
@@ -476,7 +476,7 @@ function onReloadThreadCard(e) {
 }
 
 /**
- * 🚀 下書きをさくらのレンタルサーバ経由で送信し、Gmail スレッドに SENT メッセージとして記録して下書きを削除する
+ * 🚀 下書きを PHP リレー経由で送信し、Gmail スレッドに SENT メッセージとして記録して下書きを削除する
  */
 function onSendDraft(e) {
   var settings = getSettings_();
@@ -492,9 +492,9 @@ function onSendDraft(e) {
       .build();
   }
 
-  if (!settings.sakuraEndpointUrl) {
+  if (!settings.endpointUrl) {
     return CardService.newActionResponseBuilder()
-      .setNotification(CardService.newNotification().setText('❌ エラー: さくらのPHP URLが設定されていません'))
+      .setNotification(CardService.newNotification().setText('❌ エラー: PHP URL が設定されていません'))
       .build();
   }
 
@@ -549,8 +549,8 @@ function onSendDraft(e) {
   var mimePrepared = buildRewrittenMime_(draftMsg.getRawContent(), fromEmail, fromName, customHeaders, signatureText);
   var allEnvelopeRecipients = extractAllPureEmails_(toList.concat(ccList).concat(bccList));
 
-  var sendResult = sendViaSakuraPhp_({
-    endpointUrl: settings.sakuraEndpointUrl,
+  var sendResult = sendViaRelayPhp_({
+    endpointUrl: settings.endpointUrl,
     idToken: idToken,
     fromEmail: fromEmail,
     recipients: allEnvelopeRecipients,
@@ -604,9 +604,9 @@ function onSendDraft(e) {
 }
 
 /**
- * さくらのレンタルサーバ上の PHP エンドポイントへ署名付き POST リクエストを送る共通関数
+ * サーバー上の PHP エンドポイントへ署名付き POST リクエストを送る共通関数
  */
-function postSignedToSakura_(endpointUrl, idToken, payloadObj) {
+function postSignedToRelay_(endpointUrl, idToken, payloadObj) {
   var payloadStr = JSON.stringify(payloadObj);
   var timestamp = String(Math.floor(Date.now() / 1000));
   var sigBytes = Utilities.computeHmacSha256Signature(
@@ -637,12 +637,12 @@ function postSignedToSakura_(endpointUrl, idToken, payloadObj) {
 }
 
 /**
- * さくらのレンタルサーバ上の PHP エンドポイント経由で送信
+ * サーバー上の PHP エンドポイント経由で送信
  * Google OIDC IDトークン + HMAC-SHA256 署名（タイムスタンプ付き）で安全に認証する
  */
-function sendViaSakuraPhp_(params) {
+function sendViaRelayPhp_(params) {
   var idToken = params.idToken || ScriptApp.getIdentityToken();
-  return postSignedToSakura_(params.endpointUrl, idToken, {
+  return postSignedToRelay_(params.endpointUrl, idToken, {
     action: 'send',
     from_email: params.fromEmail,
     recipients: params.recipients,
@@ -651,9 +651,9 @@ function sendViaSakuraPhp_(params) {
 }
 
 /**
- * 設定保存時にさくらサーバと Google アカウントのペアリング（所有者ロック・許可ドメイン同期）を行う
+ * 設定保存時にリレーサーバーと Google アカウントのペアリング（所有者ロック・許可ドメイン同期）を行う
  */
-function pairWithSakuraServer_(endpointUrl, allowedDomains) {
+function pairWithRelayServer_(endpointUrl, allowedDomains) {
   var idToken = ScriptApp.getIdentityToken();
   if (!idToken) {
     return {
@@ -663,7 +663,7 @@ function pairWithSakuraServer_(endpointUrl, allowedDomains) {
     };
   }
 
-  var res = postSignedToSakura_(endpointUrl, idToken, {
+  var res = postSignedToRelay_(endpointUrl, idToken, {
     action: 'pair',
     allowed_domains: allowedDomains
   });
@@ -1127,7 +1127,7 @@ function insertSentMimeToGmailThread_(sentCopyMime, threadId) {
 }
 
 /**
- * さくらインターネットから転送された受信メールのヘッダーを解析し、
+ * 転送された受信メールのヘッダーを解析し、
  * 登録済みのどの独自ドメインアドレス（および表示名）宛に届いたメールかを自動判別する
  */
 function detectReceivingProfile_(message, settings) {
@@ -1273,10 +1273,10 @@ function buildSettingsCard_(noticeText) {
 
   section.addWidget(
     CardService.newTextInput()
-      .setFieldName('sakura_endpoint_url')
+      .setFieldName('relay_endpoint_url')
       .setTitle('PHP URL')
-      .setValue(settings.sakuraEndpointUrl)
-      .setHint('https://yourdomain.com/prismpost-send.php')
+      .setValue(settings.endpointUrl)
+      .setHint('https://yourdomain.com/prismpost-relay.php')
   );
 
   section.addWidget(
@@ -1317,14 +1317,17 @@ function buildSettingsCard_(noticeText) {
 }
 
 /**
- * 設定を保存し、さくらサーバと Google アカウントのペアリングを実行するアクション
+ * 設定を保存し、リレーサーバーと Google アカウントのペアリングを実行するアクション
  */
 function onSaveSettings(e) {
   var form = e.formInput || {};
   var props = PropertiesService.getUserProperties();
 
-  if (form.sakura_endpoint_url !== undefined) {
-    props.setProperty('SAKURA_ENDPOINT_URL', form.sakura_endpoint_url.trim());
+  var rawEndpointUrl = form.relay_endpoint_url !== undefined ? form.relay_endpoint_url : form.sakura_endpoint_url;
+  if (rawEndpointUrl !== undefined) {
+    var trimmedUrl = rawEndpointUrl.trim();
+    props.setProperty('RELAY_ENDPOINT_URL', trimmedUrl);
+    props.setProperty('SAKURA_ENDPOINT_URL', trimmedUrl);
   }
   if (form.sender_profiles !== undefined) {
     props.setProperty('SENDER_PROFILES', form.sender_profiles.trim());
@@ -1345,7 +1348,7 @@ function onSaveSettings(e) {
   props.deleteProperty('API_KEY');
 
   var settings = getSettings_();
-  if (!settings.sakuraEndpointUrl || settings.sakuraEndpointUrl.indexOf('https://') !== 0) {
+  if (!settings.endpointUrl || settings.endpointUrl.indexOf('https://') !== 0) {
     return CardService.newActionResponseBuilder()
       .setNavigation(CardService.newNavigation().updateCard(
         buildSettingsCard_('❌ https:// から始まる URL を入力してください。')
@@ -1373,7 +1376,7 @@ function onSaveSettings(e) {
     }
   }
 
-  var pairResult = pairWithSakuraServer_(settings.sakuraEndpointUrl, allowedDomains);
+  var pairResult = pairWithRelayServer_(settings.endpointUrl, allowedDomains);
   if (!pairResult.ok) {
     return CardService.newActionResponseBuilder()
       .setNavigation(CardService.newNavigation().updateCard(

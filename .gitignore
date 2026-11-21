@@ -4,3 +4,7 @@ dist/
 .env
 .DS_Store
 Thumbs.db
+
+# Local note.com draft and eyecatch assets
+docs/note-draft.md
+docs/note-eyecatch.png
