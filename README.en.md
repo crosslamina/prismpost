@@ -88,6 +88,16 @@ prismpost/
 
 ---
 
+## 💡 Why This Architecture?
+
+* **Avoids proxy-address limits**: Rewriting `Reply-To` to proxy addresses (e.g., via Cloudflare Workers) runs into the **RFC 5321 64-character local-part limit** and causes duplicate messages on **Reply-All (CC)**.
+* **No database or custom headers**: Gmail does not preserve custom `X-*` headers on replies. Reading drafts (`To` / `Cc` / `Bcc` / attachments) directly from the Gmail Add-on eliminates proxy rewriting and external state stores (KV/D1).
+* **No DNS migration or paid email APIs**: Leveraging your existing hosting server's standard inbound forwarding (SRS/ARC) and outbound PHP `sendmail` (with SPF/DKIM already configured) keeps the setup at two core files and zero additional cost.
+
+> 📖 Full development story (in Japanese, on note.com): [Add article URL after publishing]
+
+---
+
 ## 🛡️ Escape Routes (If Gmail Add-ons Ever Change)
 
 Because your domains, DNS, inbound forwarding, and outbound relay (`prismpost-relay.php`) all stay under your own control on your hosting server, you are never locked in:
