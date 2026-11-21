@@ -159,20 +159,21 @@ function addSenderSelectionWidgets_(section, settings, selectedEmail, selectedNa
       .setFieldName('selected_profile')
       .setTitle('差出人');
 
-    var matched = false;
+    var selectedIdx = 0;
+    if (selectedEmail) {
+      for (var m = 0; m < profiles.length; m++) {
+        if (profiles[m].email.toLowerCase() === selectedEmail.toLowerCase()) {
+          selectedIdx = m;
+          break;
+        }
+      }
+    }
+
     for (var i = 0; i < profiles.length; i++) {
       var p = profiles[i];
       var value = p.email + '|' + p.name;
       var label = p.name ? (p.name + ' <' + p.email + '>') : p.email;
-      var isSelected = !matched && selectedEmail && (p.email.toLowerCase() === selectedEmail.toLowerCase());
-      if (isSelected) matched = true;
-      dropdown.addItem(label, value, isSelected);
-    }
-
-    if (!matched && selectedEmail) {
-      var customVal = selectedEmail + '|' + (selectedName || '');
-      var customLabel = (selectedName ? (selectedName + ' <' + selectedEmail + '>') : selectedEmail) + ' (自動検出)';
-      dropdown.addItem(customLabel, customVal, true);
+      dropdown.addItem(label, value, i === selectedIdx);
     }
 
     section.addWidget(dropdown);
@@ -1131,24 +1132,56 @@ function insertSentMimeToGmailThread_(sentCopyMime, threadId) {
  * 登録済みのどの独自ドメインアドレス（および表示名）宛に届いたメールかを自動判別する
  */
 function detectReceivingProfile_(message, settings) {
-  var myGmail = Session.getActiveUser().getEmail().toLowerCase();
   var profiles = parseSenderProfiles_(settings);
+  if (profiles.length === 0) {
+    return { email: '', name: '' };
+  }
+
+  var myGmail = Session.getActiveUser().getEmail().toLowerCase();
+  var messagesToInspect = [];
+
+  if (message && !message.isDraft()) {
+    messagesToInspect.push(message);
+  }
+  try {
+    var threadMsgs = message.getThread().getMessages();
+    for (var t = threadMsgs.length - 1; t >= 0; t--) {
+      var tm = threadMsgs[t];
+      if (!tm.isDraft() && (!message || tm.getId() !== message.getId())) {
+        messagesToInspect.push(tm);
+      }
+    }
+  } catch (ignoreErr) {}
+
   var candidates = [];
 
-  var headersToCheck = [
-    message.getHeader('X-Original-To'),
-    message.getHeader('X-Forwarded-To'),
-    message.getHeader('Delivered-To'),
-    message.getTo(),
-    message.getCc()
-  ];
+  for (var mIdx = 0; mIdx < messagesToInspect.length; mIdx++) {
+    var msg = messagesToInspect[mIdx];
+    var fromEmail = extractPureEmail_(msg.getFrom() || '');
+    if (fromEmail) {
+      var fromLower = fromEmail.toLowerCase();
+      for (var pf = 0; pf < profiles.length; pf++) {
+        if (profiles[pf].email.toLowerCase() === fromLower) {
+          return profiles[pf];
+        }
+      }
+    }
 
-  for (var i = 0; i < headersToCheck.length; i++) {
-    var list = splitAddresses_(headersToCheck[i]);
-    for (var j = 0; j < list.length; j++) {
-      var email = extractPureEmail_(list[j]);
-      if (email && email.toLowerCase() !== myGmail && !email.toLowerCase().endsWith('@gmail.com')) {
-        candidates.push(email);
+    var headersToCheck = [
+      msg.getHeader('X-Original-To'),
+      msg.getHeader('X-Forwarded-To'),
+      msg.getHeader('Delivered-To'),
+      msg.getTo(),
+      msg.getCc()
+    ];
+
+    for (var i = 0; i < headersToCheck.length; i++) {
+      var list = splitAddresses_(headersToCheck[i]);
+      for (var j = 0; j < list.length; j++) {
+        var email = extractPureEmail_(list[j]);
+        if (email && email.toLowerCase() !== myGmail && !email.toLowerCase().endsWith('@gmail.com')) {
+          candidates.push(email);
+        }
       }
     }
   }
@@ -1167,23 +1200,12 @@ function detectReceivingProfile_(message, settings) {
     var candDomain = (candEmail.split('@')[1] || '').toLowerCase();
     for (var p2 = 0; p2 < profiles.length; p2++) {
       if (profiles[p2].domain === candDomain) {
-        return {
-          email: candEmail,
-          name: profiles[p2].name,
-          domain: candDomain
-        };
+        return profiles[p2];
       }
     }
   }
 
-  if (profiles.length > 0) {
-    return profiles[0];
-  }
-
-  return {
-    email: candidates[0] || '',
-    name: ''
-  };
+  return profiles[0];
 }
 
 /**
